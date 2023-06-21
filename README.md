@@ -1,8 +1,8 @@
 [![Build Status](https://travis-ci.com/pulp-platform/riscv.svg?branch=master)](https://travis-ci.com/pulp-platform/riscv)
 
-# OpenHW Group CORE-V CV32E40S RISC-V IP
+# OpenHW Group CORE-V CV32E41S RISC-V IP
 
-CV32E40S is a small and efficient, 32-bit, in-order RISC-V core with a 4-stage pipeline that implements the following instruction set architecture:
+CV32E41S is a small and efficient, 32-bit, in-order RISC-V core with a 4-stage pipeline that implements the following instruction set architecture:
 
 * RV32[I|E]
 * [M|Zmmul]
@@ -12,19 +12,19 @@ CV32E40S is a small and efficient, 32-bit, in-order RISC-V core with a 4-stage p
 * Zicsr
 * Zifencei
 
-The CV32E40S core is aimed
+The CV32E41S core is aimed
 at security applications and offers both Machine mode and User mode, an enhanced PMP, as well as
 various anti-tampering features.
 
-It started its life as a fork of the OpenHW CV32E40P core that in its turn was based on the RI5CY core from
-the [PULP platform](https://www.pulp-platform.org/) team.
+It started its life as a fork of the OpenHW CV32E40S core that in its turn was based on the CV32E40P core.
 
 ## Documentation
 
-The CV32E40S user manual can be found in the _docs_ folder and it is
+The CV32E41S user manual can be found in the _docs_ folder and it is
 captured in reStructuredText, rendered to html using [Sphinx](https://docs.readthedocs.io/en/stable/intro/getting-started-with-sphinx.html).
 These documents are viewable using readthedocs and can be viewed [here](https://docs.openhwgroup.org/projects/cv32e40s-user-manual/en/latest/).
 
+<!--
 ## Verification
 The verification environment for the CV32E40S is _not_ in this Repository.
 
@@ -34,7 +34,7 @@ The verification environment for this core as well as other cores in the OpenHW 
 The Makefiles supported in the **core-v-verif** project automatically clone the appropriate version of the **CV32E40S**  RTL sources.
 
 ## Constraints
-Example synthesis constraints for the CV32E40S are provided.
+Example synthesis constraints for the CV32E40S are provided. -->
 
 ## Contributing
 
@@ -58,6 +58,6 @@ To get started, please check out the ["Good First Issue"
 
 ## Issues and Troubleshooting
 
-If you find any problems or issues with CV32E40S or the documentation, please check out the [issue
+If you find any problems or issues with CV32E41S or the documentation, please check out the [issue
  tracker](https://github.com/openhwgroup/cv32e40s/issues) and create a new issue if your problem is
 not yet tracked.
