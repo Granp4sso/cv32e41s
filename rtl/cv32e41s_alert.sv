@@ -22,7 +22,7 @@
 // Engineer:       Halfdan Bechmann  -  halfdan.bechmann@silabs.com           //
 //                                                                            //
 // Design Name:    Alert                                                      //
-// Project Name:   CV32E40S                                                   //
+// Project Name:   CV32E41S                                                   //
 // Language:       SystemVerilog                                              //
 //                                                                            //
 // Description:    This module combines and flops the core alert outputs.     //
@@ -30,8 +30,8 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 
-module cv32e40s_alert
-  import cv32e40s_pkg::*;
+module cv32e41s_alert
+  import cv32e41s_pkg::*;
   (input logic      clk,
    input logic      clk_ungated_i,
    input logic      rst_n,
@@ -77,4 +77,4 @@ module cv32e40s_alert
     end
   end
 
-endmodule // cv32e40s_alert
+endmodule // cv32e41s_alert
