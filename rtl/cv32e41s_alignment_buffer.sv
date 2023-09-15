@@ -41,6 +41,8 @@ module cv32e41s_alignment_buffer import cv32e41s_pkg::*;
   output logic           prefetch_busy_o,
   input xsecure_ctrl_t   xsecure_ctrl_i,
   output logic           one_txn_pend_n,
+  input  logic           mpu_if_trie_fault_i,
+  input  logic           mpu_lsu_trie_fault_i,
 
   // Interface to prefetcher
   output logic           fetch_valid_o,
@@ -427,7 +429,7 @@ module cv32e41s_alignment_buffer import cv32e41s_pkg::*;
       instr_cnt_n = 'd0;
 
       if(resp_valid_i) begin
-        n_flush_branch = outstanding_cnt_q - 2'd1;
+        n_flush_branch = (outstanding_cnt_q != 0) ? outstanding_cnt_q - 2'd1 : outstanding_cnt_q;
       end
     end else begin
       // Update number of instructions
@@ -448,7 +450,7 @@ module cv32e41s_alignment_buffer import cv32e41s_pkg::*;
         outstanding_cnt_n = outstanding_cnt_q;
       end
       2'b01 : begin
-        outstanding_cnt_n = outstanding_cnt_q - 1'b1;
+        outstanding_cnt_n = (outstanding_cnt_q != 0) ? outstanding_cnt_q - 1'b1 : outstanding_cnt_q;
       end
       2'b10 : begin
         outstanding_cnt_n = outstanding_cnt_q + 1'b1;
@@ -651,9 +653,9 @@ module cv32e41s_alignment_buffer import cv32e41s_pkg::*;
 
       aligned_q <= aligned_n;
       complete_q <= complete_n;
-      n_flush_q <= n_flush_n;
-      instr_cnt_q <= instr_cnt_n;
-      outstanding_cnt_q <= outstanding_cnt_n;
+      n_flush_q <= (mpu_if_trie_fault_i | mpu_lsu_trie_fault_i) ? '0 : n_flush_n;
+      instr_cnt_q <= (mpu_if_trie_fault_i | mpu_lsu_trie_fault_i) ? '0 :instr_cnt_n;
+      outstanding_cnt_q <= (mpu_if_trie_fault_i | mpu_lsu_trie_fault_i) ? '0 : outstanding_cnt_n;
     end
   end
 

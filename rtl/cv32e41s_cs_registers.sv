@@ -22,6 +22,7 @@
 //                 Andrea Bettati - andrea.bettati@studenti.unipr.it          //
 //                 Øystein Knauserud - oystein.knauserud@silabs.com           //
 //                 Øivind Ekelund - oivind.ekelund@silabs.com                 //
+//                 Stefano Mercogliano - stefano.mercogliano@unina.it         //
 //                                                                            //
 // Design Name:    Control and Status Registers                               //
 // Project Name:   RI5CY                                                      //
@@ -33,25 +34,32 @@
 
 module cv32e41s_cs_registers import cv32e41s_pkg::*;
 #(
-  parameter              LIB              = 0,
-  parameter rv32_e       RV32             = RV32I,
-  parameter m_ext_e      M_EXT            = M,
-  parameter bit          ZC_EXT           = 0,
-  parameter bit          CLIC             = 0,
-  parameter int unsigned CLIC_ID_WIDTH    = 5,
-  parameter int unsigned CLIC_INTTHRESHBITS = 8,
-  parameter int unsigned NUM_MHPMCOUNTERS = 1,
-  parameter int          PMP_NUM_REGIONS  = 0,
-  parameter int unsigned PMP_GRANULARITY  = 0,
-  parameter pmpncfg_t    PMP_PMPNCFG_RV[PMP_NUM_REGIONS-1:0] = '{default:PMPNCFG_DEFAULT},
-  parameter logic [31:0] PMP_PMPADDR_RV[PMP_NUM_REGIONS-1:0] = '{default:32'h0},
-  parameter mseccfg_t    PMP_MSECCFG_RV                      = MSECCFG_DEFAULT,
-  parameter lfsr_cfg_t   LFSR0_CFG        = LFSR_CFG_DEFAULT,
-  parameter lfsr_cfg_t   LFSR1_CFG        = LFSR_CFG_DEFAULT,
-  parameter lfsr_cfg_t   LFSR2_CFG        = LFSR_CFG_DEFAULT,
-  parameter bit          DEBUG            = 1,
-  parameter int          DBG_NUM_TRIGGERS = 1, // todo: implement support for DBG_NUM_TRIGGERS != 1
-  parameter int unsigned MTVT_ADDR_WIDTH  = 26
+  parameter               LIB              = 0,
+  parameter rv32_e        RV32             = RV32I,
+  parameter m_ext_e       M_EXT            = M,
+  parameter bit           ZC_EXT           = 0,
+  parameter bit           CLIC             = 0,
+  parameter int unsigned  CLIC_ID_WIDTH    = 5,
+  parameter int unsigned  CLIC_INTTHRESHBITS = 8,
+  parameter int unsigned  NUM_MHPMCOUNTERS = 1,
+  parameter int           PMP_NUM_REGIONS  = 0,
+  parameter int unsigned  PMP_GRANULARITY  = 0,
+  parameter pmpncfg_t     PMP_PMPNCFG_RV[PMP_NUM_REGIONS-1:0] = '{default:PMPNCFG_DEFAULT},
+  parameter logic [31:0]  PMP_PMPADDR_RV[PMP_NUM_REGIONS-1:0] = '{default:32'h0},
+  parameter mseccfg_t     PMP_MSECCFG_RV                      = MSECCFG_DEFAULT,
+  parameter lfsr_cfg_t    LFSR0_CFG        = LFSR_CFG_DEFAULT,
+  parameter lfsr_cfg_t    LFSR1_CFG        = LFSR_CFG_DEFAULT,
+  parameter lfsr_cfg_t    LFSR2_CFG        = LFSR_CFG_DEFAULT,
+  parameter bit           DEBUG            = 1,
+  parameter int           DBG_NUM_TRIGGERS = 1, // todo: implement support for DBG_NUM_TRIGGERS != 1
+  parameter int unsigned  MTVT_ADDR_WIDTH  = 26,
+  parameter int unsigned  PRIV_SUPERVISOR  = 0,
+  // Custom XPMP extension
+  parameter int               XPMP_ENABLE       = 0,
+  parameter xpmp_pmr_e        XPMP_PMR_ENABLE   = PMR_NONE,
+  parameter xpmp_pmr_enc_e    XPMP_PMR_ENCODING = PMR_ENC_LIN,
+  parameter xpmp_trie_e       XPMP_TRIE         = PMP_TRIE_NONE,
+  parameter xpmp_trie_cmp_e   XPMP_TRIE_CMP     = PMP_TRIE_NOTCPM
 )
 (
   // Clock and Reset
@@ -62,6 +70,8 @@ module cv32e41s_cs_registers import cv32e41s_pkg::*;
   // Configuration
   input  logic [31:0]                   mhartid_i,
   input  logic  [3:0]                   mimpid_patch_i,
+
+  // mtvec depends on the SoC configuration. stvec should instead be programmed by the m-mode firmware
   input  logic [31:0]                   mtvec_addr_i,
   input  logic                          csr_mtvec_init_i,
 
@@ -81,6 +91,13 @@ module cv32e41s_cs_registers import cv32e41s_pkg::*;
   output logic  [1:0]                   mtvec_mode_o,
   output logic [MTVT_ADDR_WIDTH-1:0]    mtvt_addr_o,
   output logic [31:0]                   mstateen0_o,
+
+  output logic [31:0]                   mideleg_o,
+  output mcause_t                       scause_o,
+  output logic [24:0]                   stvec_addr_o,
+  output logic  [1:0]                   stvec_mode_o,
+  output logic [31:0]                   sepc_o,
+
 
 
   output privlvl_t                      priv_lvl_o,
@@ -143,9 +160,22 @@ module cv32e41s_cs_registers import cv32e41s_pkg::*;
   input  logic [3:0]                    lsu_be_ex_i
 );
 
-  localparam bit PMP = SECURE;
+  localparam logic [31:0] PMP_PMPADDROFFS_RV[PMP_NUM_REGIONS-1:0] = '{default:32'h0};
+  localparam xpmpcfg_t     XPMPCFG_RV = XPMPCFG_DEFAULT;
+  localparam int PMR_OFFS_WIDTH = 32;
+  localparam bit PMR = (XPMP_PMR_ENABLE != PMR_NONE);
 
+  localparam bit PMP = SECURE;
+  localparam bit XPMP = XPMP_ENABLE && PMP;
   localparam PMP_ADDR_WIDTH = (PMP_GRANULARITY > 0) ? 33 - PMP_GRANULARITY : 32;
+
+  parameter xpmpcfg_t XPMPCFG_RESET=  '{
+                                      pmr_encoding      : XPMP_PMR_ENCODING,          
+                                      pmr_support       : XPMP_PMR_ENABLE,
+                                      trie_compression  : XPMP_TRIE_CMP,
+                                      trie_support      : XPMP_TRIE,
+                                      trie_en           : 1'b0
+                                      };
 
   localparam bit USER = SECURE;
 
@@ -164,7 +194,16 @@ module cv32e41s_cs_registers import cv32e41s_pkg::*;
 
   localparam logic [31:0] CSR_MTVT_MASK = {{MTVT_ADDR_WIDTH{1'b1}}, {(32-MTVT_ADDR_WIDTH){1'b0}}};
 
-  // CSR update logic
+//////////////////////////////////////////////////////////////// 
+//                   _       _         _             _        //
+//   _   _ _ __   __| | __ _| |_ ___  | | ___   __ _(_) ___   //
+//  | | | | '_ \ / _` |/ _` | __/ _ \ | |/ _ \ / _` | |/ __|  //
+//  | |_| | |_) | (_| | (_| | ||  __/ | | (_) | (_| | | (__   //
+//   \__,_| .__/ \__,_|\__,_|\__\___| |_|\___/ \__, |_|\___|  //
+//        |_|                                  |___/          //
+//                                                            //
+////////////////////////////////////////////////////////////////                                                          
+
   logic [31:0]                  csr_wdata_int;
   logic [31:0]                  csr_rdata_int;
   logic                         csr_we_int;
@@ -182,11 +221,16 @@ module cv32e41s_cs_registers import cv32e41s_pkg::*;
 
   logic                         unused_signals;
 
-  // Interrupt control signals
-  logic [31:0]                  mepc_q, mepc_n, mepc_rdata;
-  logic                         mepc_we;
+////////////////////////////////////////////
+//   _____      _                         //
+//  /__   \_ __(_) __ _  __ _  ___ _ __   //
+//    / /\/ '__| |/ _` |/ _` |/ _ \ '__|  //
+//   / /  | |  | | (_| | (_| |  __/ |     //
+//   \/   |_|  |_|\__, |\__, |\___|_|     //
+//                |___/ |___/             //
+//                                        //
+////////////////////////////////////////////
 
-  // Trigger
   // Trigger CSR write enables are decoded in cs_registers, all other (WARL behavior, write data and trigger matches)
   // are handled within cv32e41s_debug_triggers
   logic [31:0]                  tselect_rdata;
@@ -201,7 +245,16 @@ module cv32e41s_cs_registers import cv32e41s_pkg::*;
   logic [31:0]                  tinfo_rdata;
   logic                         tinfo_we;
 
-  // Debug
+  //////////////////////////////////////
+  //      ___     _                   //
+  //     /   \___| |__  _   _  __ _   //
+  //    / /\ / _ \ '_ \| | | |/ _` |  //
+  //   / /_//  __/ |_) | |_| | (_| |  //
+  //  /___,' \___|_.__/ \__,_|\__, |  //
+  //                          |___/   //
+  //                                  //
+  //////////////////////////////////////
+
   dcsr_t                        dcsr_q, dcsr_n, dcsr_rdata;
   logic                         dcsr_we;
 
@@ -213,6 +266,19 @@ module cv32e41s_cs_registers import cv32e41s_pkg::*;
 
   logic [31:0]                  dscratch1_q, dscratch1_n, dscratch1_rdata;
   logic                         dscratch1_we;
+
+  ////////////////////////////////////////////////////////////////////////
+  //                     _     _                               _        //
+  //    /\/\   __ _  ___| |__ (_)_ __   ___    /\/\   ___   __| | ___   //
+  //   /    \ / _` |/ __| '_ \| | '_ \ / _ \  /    \ / _ \ / _` |/ _ \  //
+  //  / /\/\ \ (_| | (__| | | | | | | |  __/ / /\/\ \ (_) | (_| |  __/  //
+  //  \/    \/\__,_|\___|_| |_|_|_| |_|\___| \/    \/\___/ \__,_|\___|  //
+  //                                                                    //
+  ////////////////////////////////////////////////////////////////////////
+
+  // Interrupt control signals
+  logic [31:0]                  mepc_q, mepc_n, mepc_rdata;
+  logic                         mepc_we;
 
   logic [31:0]                  mscratch_q, mscratch_n, mscratch_rdata;
   logic                         mscratch_we;
@@ -300,6 +366,19 @@ module cv32e41s_cs_registers import cv32e41s_pkg::*;
   logic [PMP_MAX_REGIONS-1:0]   pmp_addr_n_r_unused;
   logic [31:0]                  pmp_addr_rdata[PMP_MAX_REGIONS];
   logic [PMP_MAX_REGIONS-1:0]   pmp_addr_we;
+
+  // Custom PMR CSRs for TAB-based implementation
+  logic [PMP_MAX_REGIONS-1:0]   pmr_addroff_we;
+  logic [PMR_OFFS_WIDTH-1:0]    pmr_addroff_rdata[PMP_MAX_REGIONS];
+  logic [PMR_OFFS_WIDTH-1:0]    pmr_addroff_n[PMP_MAX_REGIONS];
+  logic [PMP_MAX_REGIONS-1:0]   pmr_addroff_rd_error;
+  logic [PMR_OFFS_WIDTH-1:0]    pmr_addroff_q[PMP_MAX_REGIONS];
+  xpmpcfg_t                     xpmpcfg_rdata;
+  xpmpcfg_t                     xpmpcfg_q;
+  xpmpcfg_t                     xpmpcfg_n;
+  logic                         xpmpcfg_we;
+  logic [1:0]                   xpmpcfg_rd_error;
+  logic                         xpmp_rd_error;
 
   mseccfg_t                     pmp_mseccfg_n;
   mseccfg_t                     pmp_mseccfg_q;
@@ -406,6 +485,85 @@ module cv32e41s_cs_registers import cv32e41s_pkg::*;
   logic                         mscratchcswl_in_wb;
   logic                         mnxti_in_wb;
 
+  // Deleg registers are used only if Supervisor mode is supported
+  logic [31:0]                  medeleg_q, medeleg_n, medeleg_rdata;
+  logic                         medeleg_we;
+  logic                         medeleg_rd_error;
+
+  logic [31:0]                  mideleg_q, mideleg_n, mideleg_rdata;
+  logic                         mideleg_we;
+  logic                         mideleg_rd_error;
+
+  //////////////////////////////////////////////////////////////////////////////////
+  //   __                             _                                   _       //
+  //  / _\_   _ _ __   ___ _ ____   _(_)___  ___  _ __    /\/\   ___   __| | ___  //
+  //  \ \| | | | '_ \ / _ \ '__\ \ / / / __|/ _ \| '__|  /    \ / _ \ / _` |/ _ \ //  
+  //  _\ \ |_| | |_) |  __/ |   \ V /| \__ \ (_) | |    / /\/\ \ (_) | (_| |  __/ //
+  //  \__/\__,_| .__/ \___|_|    \_/ |_|___/\___/|_|    \/    \/\___/ \__,_|\___| //
+  //                                                                              //
+  //////////////////////////////////////////////////////////////////////////////////
+
+  sstatus_t                     sstatus_q, sstatus_n, sstatus_rdata;
+  logic                         sstatus_we;
+  logic                         sstatus_rd_error;
+  
+  scause_t                      scause_q, scause_n, scause_rdata;
+  logic                         scause_we;
+  logic                         scause_rd_error;
+
+  stvec_t                       stvec_q, stvec_n, stvec_rdata;
+  logic                         stvec_we;
+  logic                         stvec_rd_error;
+
+  // sie and sip are just a viewport to mie and mip
+  logic [31:0]                  sip_n, sip_rdata;                          
+  logic                         sip_we;        
+
+  logic [31:0]                  sie_q, sie_n, sie_rdata;                        
+  logic                         sie_we;
+
+  logic [31:0]                  xie_n;
+  logic                         xie_we;
+
+  logic [31:0]                  stval_q, stval_n, stval_rdata;                  // Because mtval is read-only atm, stval will do the same         
+  logic                         stval_we;                                       
+  logic                         stval_rd_error;
+
+  logic [31:0]                  scounteren_q, scounteren_n, scounteren_rdata;                 
+  logic                         scounteren_we;                                  
+  logic                         scounteren_rd_error;
+
+  logic [31:0]                  senvcfg_q, senvcfg_n, senvcfg_rdata;                       
+  logic                         senvcfg_we;                                     
+  logic                         senvcfg_rd_error;
+
+  logic [31:0]                  sepc_q, sepc_n, sepc_rdata;
+  logic                         sepc_we;
+  logic                         sepc_rd_error;
+
+  logic [31:0]                  sscratch_q, sscratch_n, sscratch_rdata;
+  logic                         sscratch_we;
+  logic                         sscratch_rd_error;
+
+  logic [31:0]			            satp_q, satp_n, satp_rdata;
+  logic				                  satp_we;
+  logic                         satp_rd_error;
+
+  logic [31:0]			            scontext_q, scontext_n, scontext_rdata;
+  logic				                  scontext_we;
+  logic                         scontext_rd_error;
+
+  logic                         supervisor_rd_error;
+
+  ////////////////////////////////////////////////////////
+  //     __             _          _                    //
+  //    / /  ___   __ _(_) ___    /_\  _ __ ___  __ _   //
+  //   / /  / _ \ / _` | |/ __|  //_\\| '__/ _ \/ _` |  //
+  //  / /__| (_) | (_| | | (__  /  _  \ | |  __/ (_| |  //
+  //  \____/\___/ \__, |_|\___| \_/ \_/_|  \___|\__,_|  //
+  //                                                    //
+  ////////////////////////////////////////////////////////
+
   // Local instr_valid for write portion (WB)
   // Not factoring in ctrl_fsm_i.halt_limited_wb. This signal is only set during SLEEP mode, and while in SLEEP
   // there cannot be any CSR instruction in WB.
@@ -439,7 +597,9 @@ module cv32e41s_cs_registers import cv32e41s_pkg::*;
     jvt_rd_error ||
     priv_lvl_rd_error ||
     mstateen0_rd_error ||
-    mcause_rd_error;
+    mcause_rd_error || 
+    supervisor_rd_error ||
+    xpmp_rd_error;
 
   ////////////////////////////////////////
   // Determine if CSR access is illegal //
@@ -451,7 +611,7 @@ module cv32e41s_cs_registers import cv32e41s_pkg::*;
 
   // Bits [9:8] in csr_addr indicate priviledge level needed to access CSR's.
   // The exception is access to perfomance counters from user mode, which is configured through mcounteren.
-  assign illegal_csr_write_priv =  csr_raddr[9:8] > id_ex_pipe_i.priv_lvl;
+  assign illegal_csr_write_priv = (csr_raddr[9:8] > id_ex_pipe_i.priv_lvl);
   assign illegal_csr_read_priv  = (csr_raddr[9:8] > id_ex_pipe_i.priv_lvl);
 
   assign illegal_csr_write = (id_ex_pipe_i.csr_op != CSR_OP_READ) &&
@@ -463,6 +623,7 @@ module cv32e41s_cs_registers import cv32e41s_pkg::*;
 
   assign csr_illegal_o = (id_ex_pipe_i.instr_valid && id_ex_pipe_i.csr_en) ? illegal_csr_write || illegal_csr_read || illegal_csr_read_priv || illegal_jvt_access : 1'b0;
 
+  // PS: Supervisor mode adds no extra check on CSR illegal accesses.
 
   ////////////////////////////////////////////
   //   ____ ____  ____    ____              //
@@ -484,6 +645,139 @@ module cv32e41s_cs_registers import cv32e41s_pkg::*;
     csr_mnxti_read_o   = 1'b0;
 
     case (csr_raddr)
+
+      // Supervisor Mode CSRs
+
+      CSR_SSTATUS     : begin
+        if(PRIV_SUPERVISOR) begin 
+          csr_rdata_int = sstatus_rdata;
+        end else begin
+          csr_rdata_int    = '0;
+          illegal_csr_read = 1'b1;
+        end
+      end
+
+      CSR_SIE         : begin
+        if(PRIV_SUPERVISOR) begin 
+          csr_rdata_int = sie_rdata;
+        end else begin
+          csr_rdata_int    = '0;
+          illegal_csr_read = 1'b1;
+        end
+      end
+
+      CSR_STVEC       : begin
+        if(PRIV_SUPERVISOR) begin 
+          csr_rdata_int = stvec_rdata;
+        end else begin
+          csr_rdata_int    = '0;
+          illegal_csr_read = 1'b1;
+        end
+      end
+
+      CSR_SCOUNTEREN  : begin 
+        if(PRIV_SUPERVISOR) begin 
+          csr_rdata_int = scounteren_rdata;
+        end else begin
+          csr_rdata_int    = '0;
+          illegal_csr_read = 1'b1;
+        end
+      end
+
+      CSR_SENVCFG     : begin
+        if(PRIV_SUPERVISOR) begin 
+          csr_rdata_int = senvcfg_rdata;
+        end else begin
+          csr_rdata_int    = '0;
+          illegal_csr_read = 1'b1;
+        end
+      end
+
+      CSR_SSCRATCH    : begin
+        if(PRIV_SUPERVISOR) begin 
+          csr_rdata_int = sscratch_rdata;
+        end else begin
+          csr_rdata_int    = '0;
+          illegal_csr_read = 1'b1;
+        end
+      end
+
+      CSR_SEPC        : begin
+        if(PRIV_SUPERVISOR) begin 
+          csr_rdata_int = sepc_rdata;
+        end else begin
+          csr_rdata_int    = '0;
+          illegal_csr_read = 1'b1;
+        end
+      end
+      
+      CSR_SCAUSE      : begin
+        if(PRIV_SUPERVISOR) begin 
+          csr_rdata_int = scause_rdata;
+        end else begin
+          csr_rdata_int    = '0;
+          illegal_csr_read = 1'b1;
+        end
+      end
+
+      CSR_STVAL       : begin
+        if(PRIV_SUPERVISOR) begin 
+          csr_rdata_int = stval_rdata;
+        end else begin
+          csr_rdata_int    = '0;
+          illegal_csr_read = 1'b1;
+        end
+      end
+
+      CSR_SIP         : begin
+        if(PRIV_SUPERVISOR) begin 
+          csr_rdata_int = sip_rdata;
+        end else begin
+          csr_rdata_int    = '0;
+          illegal_csr_read = 1'b1;
+        end
+      end
+
+      CSR_SATP        : begin
+        if(PRIV_SUPERVISOR) begin 
+          csr_rdata_int = satp_rdata;
+        end else begin
+          csr_rdata_int    = '0;
+          illegal_csr_read = 1'b1;
+        end
+      end
+
+      CSR_SCONTEXT    : begin
+        if(PRIV_SUPERVISOR) begin 
+          csr_rdata_int = scontext_rdata;
+        end else begin
+          csr_rdata_int    = '0;
+          illegal_csr_read = 1'b1;
+        end
+      end
+
+      // Supervisor M-mode dependant registers - Deleg
+
+      CSR_MEDELEG    : begin
+        if(PRIV_SUPERVISOR) begin 
+          csr_rdata_int = medeleg_rdata;
+        end else begin
+          csr_rdata_int    = '0;
+          illegal_csr_read = 1'b1;
+        end
+      end
+
+      CSR_MIDELEG    : begin
+        if(PRIV_SUPERVISOR) begin 
+          csr_rdata_int = mideleg_rdata;
+        end else begin
+          csr_rdata_int    = '0;
+          illegal_csr_read = 1'b1;
+        end
+      end
+
+      // Machine Mode CSRs
+
       // jvt: Jump vector table
       CSR_JVT:  begin
         if (ZC_EXT) begin
@@ -805,6 +1099,64 @@ module cv32e41s_cs_registers import cv32e41s_pkg::*;
         end
       end
 
+      // PMR Registers
+      CSR_PMRADDROFF0,  CSR_PMRADDROFF1,  CSR_PMRADDROFF2,  CSR_PMRADDROFF3,
+      CSR_PMRADDROFF4,  CSR_PMRADDROFF5,  CSR_PMRADDROFF6,  CSR_PMRADDROFF7,
+      CSR_PMRADDROFF8,  CSR_PMRADDROFF9,  CSR_PMRADDROFF10, CSR_PMRADDROFF11,
+      CSR_PMRADDROFF12, CSR_PMRADDROFF13, CSR_PMRADDROFF14, CSR_PMRADDROFF15: begin
+        if (XPMP && PMR) begin
+          csr_rdata_int = pmr_addroff_rdata[6'(16*0 + csr_raddr[3:0])];
+        end else begin
+          csr_rdata_int    = '0;
+          illegal_csr_read = 1'b1;
+        end
+      end
+
+      CSR_PMRADDROFF16, CSR_PMRADDROFF17, CSR_PMRADDROFF18, CSR_PMRADDROFF19,
+      CSR_PMRADDROFF20, CSR_PMRADDROFF21, CSR_PMRADDROFF22, CSR_PMRADDROFF23,
+      CSR_PMRADDROFF24, CSR_PMRADDROFF25, CSR_PMRADDROFF26, CSR_PMRADDROFF27,
+      CSR_PMRADDROFF28, CSR_PMRADDROFF29, CSR_PMRADDROFF30, CSR_PMRADDROFF31: begin
+        if (XPMP && PMR) begin
+          csr_rdata_int = pmr_addroff_rdata[6'(16*1 + csr_raddr[3:0])];
+        end else begin
+          csr_rdata_int    = '0;
+          illegal_csr_read = 1'b1;
+        end
+      end
+
+      CSR_PMRADDROFF32, CSR_PMRADDROFF33, CSR_PMRADDROFF34, CSR_PMRADDROFF35,
+      CSR_PMRADDROFF36, CSR_PMRADDROFF37, CSR_PMRADDROFF38, CSR_PMRADDROFF39,
+      CSR_PMRADDROFF40, CSR_PMRADDROFF41, CSR_PMRADDROFF42, CSR_PMRADDROFF43,
+      CSR_PMRADDROFF44, CSR_PMRADDROFF45, CSR_PMRADDROFF46, CSR_PMRADDROFF47: begin
+        if (XPMP && PMR) begin
+          csr_rdata_int = pmr_addroff_rdata[6'(16*2 + csr_raddr[3:0])];
+        end else begin
+          csr_rdata_int    = '0;
+          illegal_csr_read = 1'b1;
+        end
+      end
+
+      CSR_PMRADDROFF48, CSR_PMRADDROFF49, CSR_PMRADDROFF50, CSR_PMRADDROFF51,
+      CSR_PMRADDROFF52, CSR_PMRADDROFF53, CSR_PMRADDROFF54, CSR_PMRADDROFF55,
+      CSR_PMRADDROFF56, CSR_PMRADDROFF57, CSR_PMRADDROFF58, CSR_PMRADDROFF59,
+      CSR_PMRADDROFF60, CSR_PMRADDROFF61, CSR_PMRADDROFF62, CSR_PMRADDROFF63: begin
+        if (XPMP && PMR) begin
+          csr_rdata_int =  pmr_addroff_rdata[6'(16*3 + csr_raddr[3:0])];
+        end else begin
+          csr_rdata_int    = '0;
+          illegal_csr_read = 1'b1;
+        end
+      end
+
+      CSR_XPMPCFG:begin
+      if(PMP && XPMP)begin
+      csr_rdata_int = xpmpcfg_rdata;
+       end else begin
+          csr_rdata_int    = '0;
+          illegal_csr_read = 1'b1;
+        end
+      end
+
       CSR_MSECCFG: begin
         if (PMP) begin
           csr_rdata_int = pmp_mseccfg_rdata;
@@ -1075,7 +1427,7 @@ module cv32e41s_cs_registers import cv32e41s_pkg::*;
                                                         addr:    csr_mtvec_init_i ? mtvec_addr_i[31:7] : csr_wdata_int[31:7],
                                                         zero0:   mtvec_rdata.zero0,
                                                         submode: mtvec_rdata.submode,
-                                                        mode:    csr_mtvec_init_i ? mtvec_rdata.mode : mtvec_mode_clint_resolve(mtvec_rdata.mode, csr_wdata_int[MTVEC_MODE_BIT_HIGH:MTVEC_MODE_BIT_LOW])
+                                                        mode:    csr_mtvec_init_i ? mtvec_rdata.mode : xtvec_mode_clint_resolve(mtvec_rdata.mode, csr_wdata_int[MTVEC_MODE_BIT_HIGH:MTVEC_MODE_BIT_LOW])
                                                       },
                                                 CSR_BASIC_MTVEC_MASK, MTVEC_BASIC_RESET_VAL);
       mtvec_we                 = csr_mtvec_init_i;
@@ -1116,6 +1468,9 @@ module cv32e41s_cs_registers import cv32e41s_pkg::*;
     pmpncfg_we      = {PMP_MAX_REGIONS{1'b0}};
     pmp_addr_we     = {PMP_MAX_REGIONS{1'b0}};
     pmp_mseccfg_we  = 1'b0;
+
+    pmr_addroff_we = {PMP_MAX_REGIONS{1'b0}};
+    xpmpcfg_we=      1'b0;
 
     pmp_mseccfgh_n  = pmp_mseccfgh_rdata;         // Read-only
     pmp_mseccfgh_we = 1'b0;                       // Always 0
@@ -1184,8 +1539,148 @@ module cv32e41s_cs_registers import cv32e41s_pkg::*;
     mstateen3h_n    = mstateen3_rdata;            // Read-only
     mstateen3h_we   = 1'b0;                       // Always 0
 
+    medeleg_n         = csr_next_value(csr_wdata_int, CSR_MEDELEG_MASK, MEDELEG_RESET_VAL);
+    medeleg_we        = 1'b0;
+
+    mideleg_n         = csr_next_value(csr_wdata_int, CSR_MIDELEG_MASK, MIDELEG_RESET_VAL);
+    mideleg_we        = 1'b0;
+
+    // Supervisor CSRs
+
+    sstatus_n         = csr_next_value(csr_wdata_int, CSR_SSTATUS_MASK, SSTATUS_RESET_VAL);
+    sstatus_we        = 1'b0;
+
+    sie_n             = csr_next_value(csr_wdata_int, SIX_MASK, SIE_RESET_VAL);
+    sie_we            = 1'b0;
+    
+    scounteren_n      = csr_next_value(csr_wdata_int, CSR_SCOUNTEREN_MASK, SCOUNTEREN_RESET_VAL);
+    scounteren_we     = 1'b0;
+    
+    senvcfg_n         = csr_next_value(csr_wdata_int, CSR_SENVCFG_MASK, SENVCFG_RESET_VAL);
+    senvcfg_we        = 1'b0;
+
+    sepc_n            = csr_next_value(csr_wdata_int, CSR_SEPC_MASK, SEPC_RESET_VAL);
+    sepc_we           = 1'b0;
+
+    scause_n          = csr_next_value(scause_t'{
+                                                          irq:            csr_wdata_int[31],
+                                                          exception_code: csr_wdata_int[10:0],
+                                                          default:        'b0
+                                                        },
+                                                        CSR_BASIC_SCAUSE_MASK, SCAUSE_BASIC_RESET_VAL);
+    scause_we         = 1'b0;
+
+    stval_n           = stval_rdata; // Read-Only
+    stval_we          = 1'b0;
+
+    stvec_n           = csr_next_value(stvec_t'{
+                                                        addr:    csr_wdata_int[31:7],
+                                                        zero0:   stvec_rdata.zero0,
+                                                        submode: stvec_rdata.submode,
+                                                        mode:    xtvec_mode_clint_resolve(stvec_rdata.mode, csr_wdata_int[STVEC_MODE_BIT_HIGH:STVEC_MODE_BIT_LOW])
+                                                      },
+                                                CSR_BASIC_MTVEC_MASK, MTVEC_BASIC_RESET_VAL);
+    stvec_we          = 1'b0;
+
+    sip_n             = sip_rdata; // Read-Only
+    sip_we            = 1'b0;
+
+    satp_n            = csr_next_value(csr_wdata_int, CSR_SATP_MASK, SATP_RESET_VAL);
+    satp_we           = 1'b0;
+
+    scontext_n        = csr_next_value(csr_wdata_int, CSR_SCONTEXT_MASK, SCONTEXT_RESET_VAL);
+    scontext_we       = 1'b0;
+
+    
+
     if (csr_we_int) begin
       case (csr_waddr)
+
+        // Supervisor mode CSRs we
+
+        CSR_SSTATUS     : begin
+          if(PRIV_SUPERVISOR) begin 
+            sstatus_we = 1'b1;
+          end 
+        end
+
+        CSR_SIE         : begin
+          if(PRIV_SUPERVISOR) begin 
+            sie_we = 1'b1;
+          end
+        end
+
+        CSR_STVEC       : begin
+          if(PRIV_SUPERVISOR) begin 
+            stvec_we = 1'b1;
+          end
+        end
+
+        CSR_SCOUNTEREN  : begin
+          if(PRIV_SUPERVISOR) begin 
+            scounteren_we = 1'b1;
+          end
+        end
+
+        CSR_SENVCFG     : begin
+          if(PRIV_SUPERVISOR) begin 
+            senvcfg_we = 1'b1;
+          end
+        end
+
+        CSR_SSCRATCH    : begin
+          if(PRIV_SUPERVISOR) begin 
+            sscratch_we = 1'b1;
+          end
+        end
+
+        CSR_SEPC        : begin
+          if(PRIV_SUPERVISOR) begin 
+            sepc_we = 1'b1;
+          end
+        end
+        
+        CSR_SCAUSE      : begin
+          if(PRIV_SUPERVISOR) begin 
+            scause_we = 1'b1;
+          end
+        end
+
+        CSR_STVAL       : begin
+          if(PRIV_SUPERVISOR) begin 
+            stval_we = 1'b1;
+          end
+        end
+
+        CSR_SIP         : begin
+          if(PRIV_SUPERVISOR) begin 
+            sip_we = 1'b1;
+          end
+        end
+
+        CSR_SATP        : begin
+          if(PRIV_SUPERVISOR) begin 
+            satp_we = 1'b1;
+          end
+        end
+
+        CSR_SCONTEXT    : begin
+          if(PRIV_SUPERVISOR) begin 
+            scontext_we = 1'b1;
+          end
+        end
+
+        CSR_MEDELEG    : begin
+          if(PRIV_SUPERVISOR) begin 
+            medeleg_we = 1'b1;
+          end
+        end
+
+        CSR_MIDELEG    : begin
+          if(PRIV_SUPERVISOR) begin 
+            mideleg_we = 1'b1;
+          end
+        end
 
         // jvt: Jump vector table
         CSR_JVT: begin
@@ -1395,6 +1890,49 @@ module cv32e41s_cs_registers import cv32e41s_pkg::*;
           end
         end
 
+        // PMR write enable process
+        CSR_PMRADDROFF0,  CSR_PMRADDROFF1,  CSR_PMRADDROFF2,  CSR_PMRADDROFF3,
+        CSR_PMRADDROFF4,  CSR_PMRADDROFF5,  CSR_PMRADDROFF6,  CSR_PMRADDROFF7,
+        CSR_PMRADDROFF8,  CSR_PMRADDROFF9,  CSR_PMRADDROFF10, CSR_PMRADDROFF11,
+        CSR_PMRADDROFF12, CSR_PMRADDROFF13, CSR_PMRADDROFF14, CSR_PMRADDROFF15: begin
+          if (XPMP && PMR) begin
+            pmr_addroff_we[6'(16*0 + csr_waddr[3:0])] = 1'b1;
+          end
+        end
+
+        CSR_PMRADDROFF16, CSR_PMRADDROFF17, CSR_PMRADDROFF18, CSR_PMRADDROFF19,
+        CSR_PMRADDROFF20, CSR_PMRADDROFF21, CSR_PMRADDROFF22, CSR_PMRADDROFF23,
+        CSR_PMRADDROFF24, CSR_PMRADDROFF25, CSR_PMRADDROFF26, CSR_PMRADDROFF27,
+        CSR_PMRADDROFF28, CSR_PMRADDROFF29, CSR_PMRADDROFF30, CSR_PMRADDROFF31: begin
+          if (XPMP && PMR) begin
+            pmr_addroff_we[6'(16*1 + csr_waddr[3:0])] = 1'b1;
+          end
+        end
+
+        CSR_PMRADDROFF32, CSR_PMRADDROFF33, CSR_PMRADDROFF34, CSR_PMRADDROFF35,
+        CSR_PMRADDROFF36, CSR_PMRADDROFF37, CSR_PMRADDROFF38, CSR_PMRADDROFF39,
+        CSR_PMRADDROFF40, CSR_PMRADDROFF41, CSR_PMRADDROFF42, CSR_PMRADDROFF43,
+        CSR_PMRADDROFF44, CSR_PMRADDROFF45, CSR_PMRADDROFF46, CSR_PMRADDROFF47: begin
+          if (XPMP && PMR) begin
+            pmr_addroff_we[6'(16*2 + csr_waddr[3:0])] = 1'b1;
+          end
+        end
+
+        CSR_PMRADDROFF48, CSR_PMRADDROFF49, CSR_PMRADDROFF50, CSR_PMRADDROFF51,
+        CSR_PMRADDROFF52, CSR_PMRADDROFF53, CSR_PMRADDROFF54, CSR_PMRADDROFF55,
+        CSR_PMRADDROFF56, CSR_PMRADDROFF57, CSR_PMRADDROFF58, CSR_PMRADDROFF59,
+        CSR_PMRADDROFF60, CSR_PMRADDROFF61, CSR_PMRADDROFF62, CSR_PMRADDROFF63: begin
+          if (XPMP && PMR) begin
+            pmr_addroff_we[6'(16*3 + csr_waddr[3:0])] = 1'b1;
+          end
+        end
+
+      CSR_XPMPCFG:begin
+        if(XPMP)begin
+          xpmpcfg_we=1'b1;
+        end
+      end
+
         CSR_MSECCFG: begin
           if (PMP) begin
             pmp_mseccfg_we = 1'b1;
@@ -1494,7 +2032,21 @@ module cv32e41s_cs_registers import cv32e41s_pkg::*;
       endcase
     end
 
-    // CSR side effects from other CSRs
+    //////////////////////////////////////////////////////////
+    //   __ _     _          __  __  __           _         //
+    //  / _(_) __| | ___    /__\/ _|/ _| ___  ___| |_ ___   //
+    //  \ \| |/ _` |/ _ \  /_\ | |_| |_ / _ \/ __| __/ __|  //
+    //  _\ \ | (_| |  __/ //__ |  _|  _|  __/ (__| |_\__ \  //
+    //  \__/_|\__,_|\___| \__/ |_| |_|  \___|\___|\__|___/  //
+    //                                                      //
+    //////////////////////////////////////////////////////////                                           
+
+    //////////////////////////////////////////////////////////
+    // Eng. Mercogliano:                                    //
+    //                                                      //
+    //  Side effect comprises trap handling and debugger.   //
+    //  Supervisor mode effects are still not supported.    //
+    //////////////////////////////////////////////////////////
 
     // CLIC mode is assumed when CLIC = 1
     if (CLIC) begin
@@ -1571,24 +2123,46 @@ module cv32e41s_cs_registers import cv32e41s_pkg::*;
           priv_lvl_n     = PRIV_LVL_M;  // Execute with machine mode privilege in debug mode
           priv_lvl_we    = 1'b1;
         end else begin
-          priv_lvl_n     = PRIV_LVL_M;  // Trap into machine mode
+
+          // @#@ - Supervisor Compliant
+
+          // Change privilege level according to trap delegation registers
+          // If supervisor mode is active, S-level interrupts will be masked for M-mode -> it is not possible to trap from Machine mode to Supervisor Mode
+          if(ctrl_fsm_i.csr_cause.irq) begin
+            priv_lvl_n     = (mie_q[ctrl_fsm_i.csr_cause.exception_code] & mideleg_q[ctrl_fsm_i.csr_cause.exception_code]) ? PRIV_LVL_S : PRIV_LVL_M;  
+          end else begin
+            // Exceptions will be handled in Machine Mode even if delegated to S mode if the occurr during Machine Mode execution
+            priv_lvl_n     = (medeleg_q[ctrl_fsm_i.csr_cause.exception_code] & (priv_lvl_q == PRIV_LVL_S)) ? PRIV_LVL_S : PRIV_LVL_M;  
+          end
+          
           priv_lvl_we    = 1'b1;
 
-          mstatus_n      = mstatus_rdata;
-          mstatus_n.mie  = 1'b0;
-          mstatus_n.mpie = mstatus_rdata.mie;
-          mstatus_n.mpp  = priv_lvl_rdata;
-          mstatus_we     = 1'b1;
+          if(priv_lvl_n == PRIV_LVL_M) begin
+            // @#@ Trap is taken in M mode -> save M-mode register
+            mstatus_n      = mstatus_rdata;
+            mstatus_n.mie  = 1'b0;
+            mstatus_n.mpie = mstatus_rdata.mie;
+            mstatus_n.mpp  = priv_lvl_rdata;
+            mstatus_we     = 1'b1;
 
-          mepc_n         = ctrl_fsm_i.pipe_pc;
-          mepc_we        = 1'b1;
+            mepc_n         = ctrl_fsm_i.pipe_pc;
+            mepc_we        = 1'b1;
 
-          // Save relevant fields from controller to mcause
-          mcause_n.irq            = ctrl_fsm_i.csr_cause.irq;
-          mcause_n.exception_code = ctrl_fsm_i.csr_cause.exception_code;
+            // Save relevant fields from controller to mcause
+            mcause_n.irq            = ctrl_fsm_i.csr_cause.irq;
+            mcause_n.exception_code = ctrl_fsm_i.csr_cause.exception_code;
+            mcause_we = 1'b1;
 
+          end else begin
+            // @#@ Trap is taken in S mode -> save S-mode register
 
-          mcause_we = 1'b1;
+            sepc_n         = ctrl_fsm_i.pipe_pc;
+            sepc_we        = 1'b1;
+
+            scause_n.irq            = ctrl_fsm_i.csr_cause.irq;
+            scause_n.exception_code = ctrl_fsm_i.csr_cause.exception_code;
+            scause_we = 1'b1;
+          end
 
 
           if (CLIC) begin
@@ -1726,9 +2300,15 @@ module cv32e41s_cs_registers import cv32e41s_pkg::*;
     end
   end
 
-  ////////////////////////////////////////////////////////////////////////
-  //
-  // CSR instances
+//////////////////////////////////////////////////////////////////
+//                   _           _                              //
+//    ___ ___ _ __  (_)_ __  ___| |_ __ _ _ __   ___ ___  ___   //
+//   / __/ __| '__| | | '_ \/ __| __/ _` | '_ \ / __/ _ \/ __|  //
+//  | (__\__ \ |    | | | | \__ \ || (_| | | | | (_|  __/\__ \  //
+//   \___|___/_|    |_|_| |_|___/\__\__,_|_| |_|\___\___||___/  //
+//                                                              //
+//////////////////////////////////////////////////////////////////
+
 
   cv32e41s_csr
   #(
@@ -1900,7 +2480,7 @@ module cv32e41s_cs_registers import cv32e41s_pkg::*;
     .LIB        (LIB),
     .WIDTH      (32),
     .MASK       (CSR_MSTATUS_MASK),
-    .SHADOWCOPY (SECURE),
+    .SHADOWCOPY (0),//(SECURE),
     .RESETVALUE (MSTATUS_RESET_VAL)
   )
   mstatus_csr_i
@@ -2055,6 +2635,9 @@ module cv32e41s_cs_registers import cv32e41s_pkg::*;
         .rd_error_o     ( mtvec_rd_error        )
       );
 
+      assign xie_n =  (mie_we) ? mie_n : sie_n;
+      assign xie_we = mie_we | sie_we;
+
       cv32e41s_csr
       #(
         .LIB        (LIB),
@@ -2068,8 +2651,8 @@ module cv32e41s_cs_registers import cv32e41s_pkg::*;
         .clk            ( clk                   ),
         .rst_n          ( rst_n                 ),
         .scan_cg_en_i   ( scan_cg_en_i          ),
-        .wr_data_i      ( mie_n                 ),
-        .wr_en_i        ( mie_we                ),
+        .wr_data_i      ( xie_n                 ),
+        .wr_en_i        ( xie_we                ),
         .rd_data_o      ( mie_q                 ),
         .rd_error_o     ( mie_rd_error          )
       );
@@ -2329,6 +2912,44 @@ module cv32e41s_cs_registers import cv32e41s_pkg::*;
             end
           end
 
+          // PMR CSRs optional instantiation
+
+          if(XPMP && PMR) begin: csr_pmr
+
+            if(XPMP_PMR_ENCODING == PMR_ENC_LIN)begin
+            assign pmr_addroff_n[i] = csr_wdata_int;
+            end
+
+            else if (XPMP_PMR_ENCODING == PMR_ENC_POT) begin
+              assign pmr_addroff_n[i] = csr_wdata_int[5:0];
+            end
+
+            else if (XPMP_PMR_ENCODING == PMR_ENC_MIX) begin
+              assign pmr_addroff_n[i] = csr_wdata_int[8:0];
+            end
+
+            cv32e41s_csr
+                      #(
+                        .LIB        (LIB),
+                        .WIDTH      (PMR_OFFS_WIDTH),
+                        .MASK       (CSR_PMRADDROFF_MASK),
+                        .SHADOWCOPY (0),
+                        .RESETVALUE (PMP_PMPADDROFFS_RV[i])
+                      )
+                      pmraddroff_csr_i
+                      (
+                        .clk            ( clk                       ),
+                        .rst_n          ( rst_n                     ),
+                        .scan_cg_en_i   ( scan_cg_en_i              ),
+                        .wr_data_i      ( pmr_addroff_n[i]     ),
+                        .wr_en_i        ( pmr_addroff_we[i]    ),
+                        .rd_data_o      ( pmr_addroff_q[i] ),
+                        .rd_error_o     ( pmr_addroff_rd_error[i]      )
+                      );
+              assign pmr_addroff_rdata[i] = pmr_addroff_q[i];
+              assign csr_pmp_o.pmraddroff[i] = pmr_addroff_q[i];
+          end
+
           cv32e41s_csr
           #(
             .LIB        (LIB),
@@ -2452,6 +3073,8 @@ module cv32e41s_cs_registers import cv32e41s_pkg::*;
 
           assign pmpaddr_wr_addr_match[i]  = 1'b0;
 
+          assign pmr_addroff_rdata[i] = '0;
+
           assign csr_pmp_o.addr[i]         = '0;
           assign csr_pmp_o.cfg[i]          = pmpncfg_t'('0);
         end
@@ -2488,6 +3111,53 @@ module cv32e41s_cs_registers import cv32e41s_pkg::*;
 
       assign csr_pmp_o.mseccfg = pmp_mseccfg_q;
 
+      // XPMP config register
+
+      if(XPMP) begin: csr_xpmpcfg
+        
+        //assign xpmpcfg_n = xpmpcfg_rdata;
+        assign xpmpcfg_n = {
+                              XPMP_PMR_ENCODING,
+                              XPMP_PMR_ENABLE,
+                              XPMP_TRIE_CMP,
+                              XPMP_TRIE,
+                              csr_wdata_int[0]
+                            };  // Only bit 0 is writable
+
+        cv32e41s_csr
+                  #(
+                  .LIB        (LIB),
+                  .WIDTH      ($bits(xpmpcfg_t)),
+                  .MASK       (CSR_XPMPCFG_MASK),
+                  .SHADOWCOPY (SECURE),
+                  .RESETVALUE (XPMPCFG_RESET)
+                 )
+                 xpmpcfg_csr_i
+                (
+                  .clk            ( clk                       ),
+                  .rst_n          ( rst_n                     ),
+                  .scan_cg_en_i   ( scan_cg_en_i              ),
+                  .wr_data_i      ( xpmpcfg_n     ),
+                  .wr_en_i        ( xpmpcfg_we    ),
+                  .rd_data_o      ( xpmpcfg_q     ),
+                  .rd_error_o     ( xpmpcfg_rd_error      )
+                );
+                
+        assign  xpmpcfg_rdata = {
+                                  XPMP_PMR_ENCODING,
+                                  XPMP_PMR_ENABLE,
+                                  XPMP_TRIE_CMP,
+                                  XPMP_TRIE,
+                                  xpmpcfg_q[0]
+                                };  
+
+      end else begin
+        assign  xpmpcfg_rdata = '0;
+      end 
+
+      assign csr_pmp_o.xpmpcfg = xpmpcfg_rdata;
+      assign xpmp_rd_error = |pmr_addroff_rd_error || xpmpcfg_rd_error;
+
       // Combine read error signals
       assign pmp_rd_error = |pmpncfg_rd_error || |pmp_addr_rd_error || pmp_mseccfg_rd_error;
 
@@ -2503,6 +3173,7 @@ module cv32e41s_cs_registers import cv32e41s_pkg::*;
 
         assign pmp_addr_q[i]             = '0;
         assign pmp_addr_rdata[i]         = '0;
+        assign pmr_addroff_rdata[i]      = '0;
         assign pmp_addr_n_r[i]           = '0;
         assign pmp_addr_n_r_unused[i]    = '0;
         assign pmp_addr_rd_error[i]      = 1'b0;
@@ -2519,10 +3190,247 @@ module cv32e41s_cs_registers import cv32e41s_pkg::*;
       assign pmp_mseccfg_q        = mseccfg_t'('0);
       assign pmp_mseccfg_rd_error = 1'b0;
 
+      assign xpmp_rd_error    = 1'b0;
+
       assign pmp_rd_error         = 1'b0;
 
     end
   endgenerate
+
+  // Supervisor Mode optional CSRs ( mdeleg registers as well )
+
+  if(PRIV_SUPERVISOR) begin: supervisor_csrs
+
+    cv32e41s_csr
+    #(
+      .LIB        (LIB),
+      .WIDTH      (32),
+      .MASK       (CSR_MEDELEG_MASK),
+      .SHADOWCOPY (SECURE),
+      .RESETVALUE (MEDELEG_RESET_VAL)
+    )
+    medeleg_csr_i
+    (
+      .clk            ( clk                   ),
+      .rst_n          ( rst_n                 ),
+      .scan_cg_en_i   ( scan_cg_en_i          ),
+      .wr_data_i      ( medeleg_n         ),
+      .wr_en_i        ( medeleg_we        ),
+      .rd_data_o      ( medeleg_q         ),
+      .rd_error_o     ( medeleg_rd_error  )
+    );
+
+    cv32e41s_csr
+    #(
+      .LIB        (LIB),
+      .WIDTH      (32),
+      .MASK       (CSR_MIDELEG_MASK),
+      .SHADOWCOPY (SECURE),
+      .RESETVALUE (MIDELEG_RESET_VAL)
+    )
+    mideleg_csr_i
+    (
+      .clk            ( clk                   ),
+      .rst_n          ( rst_n                 ),
+      .scan_cg_en_i   ( scan_cg_en_i          ),
+      .wr_data_i      ( mideleg_n         ),
+      .wr_en_i        ( mideleg_we        ),
+      .rd_data_o      ( mideleg_q         ),
+      .rd_error_o     ( mideleg_rd_error  )
+    );
+
+    cv32e41s_csr
+    #(
+      .LIB        (LIB),
+      .WIDTH      ($bits(sstatus_t)),
+      .MASK       (CSR_SSTATUS_MASK),
+      .SHADOWCOPY (SECURE),
+      .RESETVALUE (SSTATUS_RESET_VAL)
+    )
+    sstatus_csr_i
+    (
+      .clk            ( clk                   ),
+      .rst_n          ( rst_n                 ),
+      .scan_cg_en_i   ( scan_cg_en_i          ),
+      .wr_data_i      ( sstatus_n         ),
+      .wr_en_i        ( sstatus_we        ),
+      .rd_data_o      ( sstatus_q         ),
+      .rd_error_o     ( sstatus_rd_error  )
+    );
+
+  cv32e41s_csr
+  #(
+    .LIB        (LIB),
+    .WIDTH      (32),
+    .MASK       (CSR_STVEC_MASK),
+    .SHADOWCOPY (SECURE),
+    .RESETVALUE (STVEC_RESET_VAL)
+  )
+  stvec_csr_i
+  (
+    .clk            ( clk                   ),
+    .rst_n          ( rst_n                 ),
+    .scan_cg_en_i   ( scan_cg_en_i          ),
+    .wr_data_i      ( stvec_n         ),
+    .wr_en_i        ( stvec_we        ),
+    .rd_data_o      ( stvec_q         ),
+    .rd_error_o     ( stvec_rd_error  )
+  );
+
+
+  cv32e41s_csr
+  #(
+    .LIB        (LIB),
+    .WIDTH      (32),
+    .MASK       (CSR_SCOUNTEREN_MASK),
+    .SHADOWCOPY (SECURE),
+    .RESETVALUE (SCOUNTEREN_RESET_VAL)
+  )
+  scounteren_csr_i
+  (
+    .clk            ( clk                   ),
+    .rst_n          ( rst_n                 ),
+    .scan_cg_en_i   ( scan_cg_en_i          ),
+    .wr_data_i      ( scounteren_n         ),
+    .wr_en_i        ( scounteren_we        ),
+    .rd_data_o      ( scounteren_q         ),
+    .rd_error_o     ( scounteren_rd_error  )
+  );
+
+  cv32e41s_csr
+  #(
+    .LIB        (LIB),
+    .WIDTH      (32),
+    .MASK       (CSR_SENVCFG_MASK),
+    .SHADOWCOPY (SECURE),
+    .RESETVALUE (SENVCFG_RESET_VAL)
+  )
+  senvcfg_csr_i
+  (
+    .clk            ( clk                   ),
+    .rst_n          ( rst_n                 ),
+    .scan_cg_en_i   ( scan_cg_en_i          ),
+    .wr_data_i      ( senvcfg_n         ),
+    .wr_en_i        ( senvcfg_we        ),
+    .rd_data_o      ( senvcfg_q         ),
+    .rd_error_o     ( senvcfg_rd_error  )
+  );
+
+
+  cv32e41s_csr
+  #(
+    .LIB        (LIB),
+    .WIDTH      (32),
+    .MASK       (CSR_SSCRATCH_MASK),
+    .SHADOWCOPY (SECURE),
+    .RESETVALUE (SSCRATCH_RESET_VAL)
+  )
+  sscratch_csr_i
+  (
+    .clk            ( clk                   ),
+    .rst_n          ( rst_n                 ),
+    .scan_cg_en_i   ( scan_cg_en_i          ),
+    .wr_data_i      ( sscratch_n         ),
+    .wr_en_i        ( sscratch_we        ),
+    .rd_data_o      ( sscratch_q         ),
+    .rd_error_o     ( sscratch_rd_error  )
+  );
+
+  cv32e41s_csr
+  #(
+    .LIB        (LIB),
+    .WIDTH      (32),
+    .MASK       (CSR_SEPC_MASK),
+    .SHADOWCOPY (SECURE),
+    .RESETVALUE (SEPC_RESET_VAL)
+  )
+  sepc_csr_i
+  (
+    .clk            ( clk                   ),
+    .rst_n          ( rst_n                 ),
+    .scan_cg_en_i   ( scan_cg_en_i          ),
+    .wr_data_i      ( sepc_n         ),
+    .wr_en_i        ( sepc_we        ),
+    .rd_data_o      ( sepc_q         ),
+    .rd_error_o     ( sepc_rd_error  )
+  );
+
+  cv32e41s_csr
+  #(
+    .LIB        (LIB),
+    .WIDTH      ($bits(scause_t)),
+    .MASK       (CSR_BASIC_SCAUSE_MASK),
+    .SHADOWCOPY (SECURE),
+    .RESETVALUE (SCAUSE_BASIC_RESET_VAL)
+  )
+  scause_csr_i
+  (
+    .clk            ( clk                   ),
+    .rst_n          ( rst_n                 ),
+    .scan_cg_en_i   ( scan_cg_en_i          ),
+    .wr_data_i      ( scause_n         ),
+    .wr_en_i        ( scause_we        ),
+    .rd_data_o      ( scause_q         ),
+    .rd_error_o     ( scause_rd_error  )
+  );
+
+  cv32e41s_csr
+  #(
+    .LIB        (LIB),
+    .WIDTH      (32),
+    .MASK       (CSR_SATP_MASK),
+    .SHADOWCOPY (SECURE),
+    .RESETVALUE (SATP_RESET_VAL)
+  )
+  satp_csr_i
+  (
+    .clk            ( clk                   ),
+    .rst_n          ( rst_n                 ),
+    .scan_cg_en_i   ( scan_cg_en_i          ),
+    .wr_data_i      ( satp_n         ),
+    .wr_en_i        ( satp_we        ),
+    .rd_data_o      ( satp_q         ),
+    .rd_error_o     ( satp_rd_error  )
+  );
+
+  cv32e41s_csr
+  #(
+    .LIB        (LIB),
+    .WIDTH      (32),
+    .MASK       (CSR_SCONTEXT_MASK),
+    .SHADOWCOPY (SECURE),
+    .RESETVALUE (SCONTEXT_RESET_VAL)
+  )
+  scontext_csr_i
+  (
+    .clk            ( clk                   ),
+    .rst_n          ( rst_n                 ),
+    .scan_cg_en_i   ( scan_cg_en_i          ),
+    .wr_data_i      ( scontext_n         ),
+    .wr_en_i        ( scontext_we        ),
+    .rd_data_o      ( scontext_q         ),
+    .rd_error_o     ( scontext_rd_error  )
+  );
+
+  end else begin
+    assign scontext_rd_error   = '0;  assign scontext_q     = '0;
+    assign satp_rd_error       = '0;  assign satp_q         = '0;
+    assign sie_q          = '0;
+    assign stval_rd_error      = '0;  assign stval_q        = '0;
+    assign scause_rd_error     = '0;  assign scause_q       = '0;
+    assign sepc_rd_error       = '0;  assign sepc_q         = '0;
+    assign senvcfg_rd_error    = '0;  assign senvcfg_q      = '0;
+    assign scounteren_rd_error = '0;  assign scounteren_q   = '0;
+    assign sstatus_rd_error    = '0;  assign sstatus_q      = '0;
+    assign stvec_rd_error      = '0;  assign stvec_q        = '0;
+    assign medeleg_rd_error    = '0;  assign medeleg_q      = '0;
+    assign mideleg_rd_error    = '0;  assign mideleg_q      = '0;
+  end
+
+  assign stval_rd_error      = '0;
+  assign supervisor_rd_error =  scontext_rd_error | satp_rd_error | stval_rd_error | scause_rd_error | stvec_rd_error |
+                                sepc_rd_error | senvcfg_rd_error | scounteren_rd_error | sstatus_rd_error |
+                                medeleg_rd_error | mideleg_rd_error;
 
   ////////////////////////////////////////////////////////////////////////
   //
@@ -2618,6 +3526,24 @@ module cv32e41s_cs_registers import cv32e41s_pkg::*;
     end
   endgenerate
 
+  // Supervisor rdata assign. Keep in mind that _q signals are hardwired to 0 if Supervisor mode is disabled
+  assign sstatus_rdata =    sstatus_q;
+  assign sie_rdata =        mie_rdata & SIX_MASK;
+  assign stvec_rdata =      stvec_q;
+  assign scounteren_rdata = scounteren_q;
+  assign senvcfg_rdata =    senvcfg_q;
+  assign sscratch_rdata =   sscratch_q;
+  assign sepc_rdata =       sepc_q;
+  assign scause_rdata =     scause_q; // When Supervisor CLIC is going to be implemented, scause will require major modifications and also consequences into the controller fsm
+  assign stval_rdata =      stval_q;
+  assign sip_rdata =        mip_rdata & SIX_MASK;
+  assign satp_rdata =       satp_q;
+  assign scontext_rdata =   scontext_q;
+
+  assign medeleg_rdata =    medeleg_q;
+  assign mideleg_rdata =    mideleg_q;
+
+
   ////////////////////////////////////////////////////////////////////////
   //
   // CSR outputs
@@ -2629,7 +3555,8 @@ module cv32e41s_cs_registers import cv32e41s_pkg::*;
   assign mcause_o      = mcause_rdata;
   assign mcycle_o      = mhpmcounter_rdata[0];
   assign mepc_o        = mepc_rdata;
-  assign mie_o         = mie_rdata;
+
+  assign mie_o         = mie_rdata;  // mideleg register should mask supervisor interrupts for Machine mode (check int_controller for more)
   assign mintstatus_o  = mintstatus_rdata;
   assign mintthresh_o  = mintthresh_rdata[7:0];
   assign mstatus_o     = mstatus_rdata;
@@ -2639,6 +3566,15 @@ module cv32e41s_cs_registers import cv32e41s_pkg::*;
 
   assign priv_lvl_o    = priv_lvl_rdata;
   assign mstateen0_o   = mstateen0_rdata;
+
+  // Supervisor related CSR outputs
+  assign mideleg_o     = mideleg_rdata;
+  assign scause_o      = scause_rdata;
+  assign sepc_o        = sepc_rdata;
+  assign stvec_addr_o  = stvec_rdata.addr;
+  assign stvec_mode_o  = stvec_rdata.mode;
+
+  // Supervisor outputs: at the moment supervisor csrs are implemented as generic normal CSRs with no effect. So none of those are carried into the microarchitecture. (But they will ;))
 
   ////////////////////////////////////////////////////////////////////////
   //  ____       _                   _____     _                        //

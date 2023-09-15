@@ -73,7 +73,7 @@ module cv32e41s_csr #(
       for (genvar i = 0; i < WIDTH; i++) begin : gen_csr
         if (MASK[i]) begin : gen_unmasked
           // Bits with mask set are actual flipflops
-          always_ff @(posedge clk or negedge rst_n) begin
+          always_ff @(posedge clk or posedge rst_n) begin
             if (!rst_n) begin
               rdata_blk[i] <= RESETVALUE[i];
             end else if (wr_en_i) begin

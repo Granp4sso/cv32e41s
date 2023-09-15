@@ -1,38 +1,19 @@
-// Copyright 2018 ETH Zurich and University of Bologna.
-// Copyright and related rights are licensed under the Solderpad Hardware
-// License, Version 0.51 (the "License"); you may not use this file except in
-// compliance with the License.  You may obtain a copy of the License at
-// http://solderpad.org/licenses/SHL-0.51. Unless required by applicable law
-// or agreed to in writing, software, hardware and materials distributed under
-// this License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
-// CONDITIONS OF ANY KIND, either express or implied. See the License for the
-// specific language governing permissions and limitations under the License.
+
+// Copyright 2023 University of Naples, Federico II
 
 ////////////////////////////////////////////////////////////////////////////////
-// Engineer:       Matthias Baer - baermatt@student.ethz.ch                   //
+// Engineer:       Antonio Emmanuele                                          //
 //                                                                            //
 // Additional contributions by:                                               //
-//                 Igor Loi - igor.loi@unibo.it                               //
-//                 Andreas Traber - atraber@student.ethz.ch                   //
-//                 Sven Stucki - svstucki@student.ethz.ch                     //
-//                 Michael Gautschi - gautschi@iis.ee.ethz.ch                 //
-//                 Davide Schiavone - pschiavo@iis.ee.ethz.ch                 //
-//                 Halfdan Bechmann - halfdan.bechmann@silabs.com             //
-//                 Øystein Knauserud - oystein.knauserud@silabs.com           //
-//                 Michael Platzer - michael.platzer@tuwien.ac.at             //
+//                 Stefano Mercogliano - stefano.mercogliano@unina.it         //
 //                                                                            //
-// Design Name:    Top level module                                           //
-// Project Name:   RI5CY                                                      //
-// Language:       SystemVerilog                                              //
 //                                                                            //
-// Description:    Top level module of the RISC-V core.                       //
+// Description:   Top level for cv32e41s. It hosts the incore and the         //
+//                internal bus for private addressing peripherals such        //
+//                as TCMs and security related devices                        //
 //                                                                            //
 ////////////////////////////////////////////////////////////////////////////////
 
-`ifndef CVE32E40S_PKG
-`define CVE32E40S_PKG
-  `include "cv32e41s_pkg.sv"
-`endif
 
 module cv32e41s_core import cv32e41s_pkg::*;
 #(
@@ -53,10 +34,32 @@ module cv32e41s_core import cv32e41s_pkg::*;
   parameter int                         PMP_NUM_REGIONS                         = 0,
   parameter pmpncfg_t                   PMP_PMPNCFG_RV[PMP_NUM_REGIONS-1:0]     = '{default:PMPNCFG_DEFAULT},
   parameter logic [31:0]                PMP_PMPADDR_RV[PMP_NUM_REGIONS-1:0]     = '{default:32'h0},
-  parameter mseccfg_t                   PMP_MSECCFG_RV                          = MSECCFG_DEFAULT,
-  parameter lfsr_cfg_t                  LFSR0_CFG                               = LFSR_CFG_DEFAULT, // Do not use default value for LFSR configuration
-  parameter lfsr_cfg_t                  LFSR1_CFG                               = LFSR_CFG_DEFAULT, // Do not use default value for LFSR configuration
-  parameter lfsr_cfg_t                  LFSR2_CFG                               = LFSR_CFG_DEFAULT  // Do not use default value for LFSR configuration
+  parameter mseccfg_t                   PMP_MSECCFG_RV                          = MSECCFG_DEFAULT,  
+
+  parameter lfsr_cfg_t                  LFSR0_CFG                               = LFSR_CFG_DEFAULT,   // Do not use default value for LFSR configuration
+  parameter lfsr_cfg_t                  LFSR1_CFG                               = LFSR_CFG_DEFAULT,   // Do not use default value for LFSR configuration
+  parameter lfsr_cfg_t                  LFSR2_CFG                               = LFSR_CFG_DEFAULT,   // Do not use default value for LFSR configuration
+
+  // Custom XPMP extension
+  parameter int                         XPMP_ENABLE       = 1,
+  parameter xpmp_pmr_e                  XPMP_PMR_ENABLE   = PMR_SUPPORT,
+  parameter xpmp_pmr_enc_e              XPMP_PMR_ENCODING = PMR_ENC_LIN,
+  parameter xpmp_trie_e                 XPMP_TRIE         = PMP_TRIE_NONE,
+  parameter xpmp_trie_cmp_e             XPMP_TRIE_CMP     = PMP_TRIE_NOTCPM,
+
+  // Internal address space parameters 
+  parameter logic [31:0] INT_BUS_START   = 32'h70000000,   // Starting address of the incore bus
+  parameter logic [31:0] INT_BUS_DIM     = 12* 1024,       // Size of the internal bus address space 
+  // TCM Parameters, the tcm is placed into the internal address space
+  // Instruction TCM Parameters
+  parameter logic [31:0] TCM_INST_SIZE     =  4 * 1024,    // Size of the instruction TCM
+  parameter logic [31:0] TCM_INST_START    = INT_BUS_START, // Starting address of the inst tcm 
+  // Data TCM Parameters
+  parameter logic [31:0] TCM_DATA_SIZE     =  4 * 1024,      //  Size of the data TCM
+  parameter logic [31:0] TCM_DATA_START    = INT_BUS_START + 32'h2000,   //  Starting address of the data tcm  
+  // Region Protection Memory Parameters
+  parameter logic [31:0] RPM_SIZE     =  1 * 1024,      
+  parameter logic [31:0] RPM_START    = TCM_DATA_START + TCM_DATA_SIZE     
 )
 (
   // Clock and reset
@@ -73,7 +76,7 @@ module cv32e41s_core import cv32e41s_pkg::*;
   input  logic [31:0]                   mtvec_addr_i,
 
   // Instruction memory interface
-  output logic                          instr_req_o,
+  output logic                          instr_req_o, 
   input  logic                          instr_gnt_i,
   input  logic                          instr_rvalid_i,
   output logic [31:0]                   instr_addr_o,
@@ -145,1110 +148,465 @@ module cv32e41s_core import cv32e41s_pkg::*;
   input  logic                          fetch_enable_i,
   output logic                          core_sleep_o
 );
-
-  // No additional hardware performance counters
-  localparam int          NUM_MHPMCOUNTERS = 0;
-
-  // Number of register file read ports
-  localparam int unsigned REGFILE_NUM_READ_PORTS = 2;
-
-  // Zc is always present
-  localparam bit ZC_EXT = 1;
-
-  // Determine alignedness of mtvt
-  // mtvt[31:N] holds mtvt table entry
-  // mtvt[N-1:0] is tied to zero.
-  localparam int unsigned MTVT_LSB = ((CLIC_ID_WIDTH + 2) < 6) ? 6 : (CLIC_ID_WIDTH + 2);
-  localparam int unsigned MTVT_ADDR_WIDTH = 32 - MTVT_LSB;
-
-  logic         clk;                    // Gated clock
-  logic         fetch_enable;
-
-  logic [31:0]  pc_if;                  // Program counter in IF stage
-  logic         ptr_in_if;              // IF stage contains a pointer
-  privlvl_t     priv_lvl_if;            // IF stage privilege level
-
-  // Jump and branch target and decision (EX->IF)
-  logic [31:0] jump_target_id;
-  logic [31:0] branch_target_ex;
-  logic        branch_decision_ex;
-
-  // Busy signals
-  logic        if_busy;
-  logic        lsu_busy;
-  logic        lsu_interruptible;
-
-  // ID/EX pipeline
-  id_ex_pipe_t id_ex_pipe;
-
-  // EX/WB pipeline
-  ex_wb_pipe_t ex_wb_pipe;
-
-  // IF/ID pipeline
-  if_id_pipe_t if_id_pipe;
-
-  // Controller
-  ctrl_byp_t   ctrl_byp;
-  ctrl_fsm_t   ctrl_fsm;
-
-  // Gated debug_req_i signal depending on DEBUG parameter
-  logic        debug_req_gated;
-
-  // Register File Write Back
-  logic        rf_we_wb;
-  rf_addr_t    rf_waddr_wb;
-  logic [31:0] rf_wdata_wb;
-
-  // Forwarding RF from EX
-  logic [31:0] rf_wdata_ex;
-
-  // Detect last_op
-  logic        last_op_if;
-  logic        last_op_id;
-  logic        last_op_ex;
-  logic        last_op_wb;
-
-  // Abort_op bits
-  logic        abort_op_if;
-  logic        abort_op_id;
-  logic        abort_op_wb;
-
-  // First op bits
-  logic        first_op_id;
-  logic        first_op_ex;
-
-  // Register file signals from ID/decoder to controller
-  logic [REGFILE_NUM_READ_PORTS-1:0] rf_re_id;
-  rf_addr_t    rf_raddr_id[REGFILE_NUM_READ_PORTS];
-
-  // Register file read data
-  rf_data_t    rf_rdata_id[REGFILE_NUM_READ_PORTS];
-
-  // Register file write interface
-  rf_addr_t    rf_waddr[REGFILE_NUM_WRITE_PORTS];
-  rf_data_t    rf_wdata[REGFILE_NUM_WRITE_PORTS];
-  logic        rf_we   [REGFILE_NUM_WRITE_PORTS];
-
-  // CSR control
-  logic [24:0] mtvec_addr;
-  logic [1:0]  mtvec_mode;
-
-  // JVT
-  logic [JVT_ADDR_WIDTH-1:0]  jvt_addr;
-  logic [5:0]                 jvt_mode;
-
-  logic [MTVT_ADDR_WIDTH-1:0] mtvt_addr;
-
-  logic [31:0] mstateen0;
-
-  logic [7:0]  mintthresh;
-  mintstatus_t mintstatus;
-
-  mcause_t     mcause;
-
-  logic [31:0] csr_rdata;
-  logic csr_counter_read;
-  logic csr_wr_in_wb_flush;
-  logic csr_irq_enable_write;
-
-  privlvl_t     priv_lvl_lsu;
-  privlvlctrl_t priv_lvl_if_ctrl;
-
-  privlvl_t     priv_lvl;
-
-  logic         csr_mnxti_read;
-
-  // CLIC signals for returning pointer addresses
-  // when mnxti is accessed
-  logic        csr_clic_pa_valid;   // A CSR access to mnxti has a valid ponter address
-  logic [31:0] csr_clic_pa;         // Pointer address returned by accessing mnxti
-
-  // LSU
-  logic        lsu_split_ex;
-  logic        lsu_first_op_ex;
-  logic        lsu_last_op_ex;
-  mpu_status_e lsu_mpu_status_wb;
-  logic [31:0] lsu_wpt_match_wb;
-  logic [31:0] lsu_rdata_wb;
-  lsu_err_wb_t lsu_err_wb;
-
-  logic        lsu_valid_0;             // Handshake with EX
-  logic        lsu_ready_ex;
-  logic        lsu_valid_ex;
-  logic        lsu_ready_0;
-
-  logic        lsu_valid_1;             // Handshake with WB
-  logic        lsu_ready_wb;
-  logic        lsu_valid_wb;
-  logic        lsu_ready_1;
-
-  // LSU signals to trigger module
-  logic [31:0] lsu_addr_ex;
-  logic        lsu_we_ex;
-  logic [3:0]  lsu_be_ex;
-
-  logic        data_stall_wb;
-
-  logic [31:0] wpt_match_wb;       // Sticky wpt_match from WB stage
-  mpu_status_e mpu_status_wb;      // Sticky mpu_status from WB stage
-
-  // Stage ready signals
-  logic        id_ready;
-  logic        ex_ready;
-  logic        wb_ready;
-
-  // Stage valid signals
-  logic        if_valid;
-  logic        id_valid;
-  logic        ex_valid;
-  logic        wb_valid;
-
-
-  // Interrupts
-  mstatus_t    mstatus;
-  logic [31:0] mepc, dpc;
-  logic [31:0] mie;
-  logic [31:0] mip;
-
-  // Signal from IF to init mtvec at boot time
-  logic        csr_mtvec_init_if;
-
-  // Major Alert Triggers
-  logic        rf_ecc_err;
-  logic        pc_err_if;
-  logic        csr_err;
-  logic        itf_int_err;
-  logic        itf_prot_err;
-  logic        integrity_err_if;
-  logic        protocol_err_if;
-  logic        lsu_integrity_err;
-  logic        lsu_protocol_err;
-
-  // Minor Alert Triggers
-  logic        lfsr_lockup;
-
-  // debug mode and dcsr configuration
-  // From cs_registers
-  dcsr_t       dcsr;
-
-  // trigger match detected in trigger module (using IF timing)
-  // One bit per trigger (max 32 triggers)
-  logic [31:0] trigger_match_if;
-  // trigger match detected in trigger module (using EX/LSU timing)
-  // One bit per trigger (max 32 triggers)
-  logic [31:0] trigger_match_ex;
-  // trigger match detected in trigger module (using WB timing, etrigger)
-  logic        etrigger_wb;
-
-  // Controller <-> decoder
-  logic        alu_en_id;
-  logic        alu_jmp_id;
-  logic        alu_jmpr_id;
-  logic        sys_en_id;
-  logic        sys_mret_insn_id;
-  logic        sys_wfi_insn_id;
-  logic        last_sec_op_id;
-  logic        csr_en_id;
-  logic        csr_en_raw_id;
-  csr_opcode_e csr_op_id;
-  logic        csr_illegal;
-
-  // irq signals
-  // TODO:AB Should find a proper suffix for signals from interrupt_controller
-  logic        irq_req_ctrl;
-  logic [9:0]  irq_id_ctrl;
-  logic        irq_wu_ctrl;
-
-  // PMP CSR's
-  pmp_csr_t csr_pmp;
-  // CLIC specific irq signals
-  logic                       irq_clic_shv;
-  logic [7:0]                 irq_clic_level;
-  logic [1:0]                 irq_clic_priv;
-  logic                       mnxti_irq_pending;
-  logic [CLIC_ID_WIDTH-1:0]   mnxti_irq_id;
-  logic [7:0]                 mnxti_irq_level;
-
-  // Used (only) by verification environment
-  logic        irq_ack;
-  logic [9:0]  irq_id;
-  logic [7:0]  irq_level;       // Only applicable if CLIC = 1
-  logic [1:0]  irq_priv;        // Only applicable if CLIC = 1
-  logic        irq_shv;         // Only applicable if CLIC = 1
-  logic        dbg_ack;
-
-  // Xsecure control
-  xsecure_ctrl_t xsecure_ctrl;
-
-  // Dummy Instruction LFSR shift control
-  logic        lfsr_shift_if;
-  logic        lfsr_shift_id;
-
-  // Internal OBI interfaces - Monitor interfaces are never used
-
-  cv32e41s_if_c_obi_instr_master_i  c_obi_instr_if_ma_i;
-  cv32e41s_if_c_obi_instr_master_o  c_obi_instr_if_ma_o;
-
-  cv32e41s_if_c_obi_data_master_i   c_obi_data_if_ma_i;
-  cv32e41s_if_c_obi_data_master_o   c_obi_data_if_ma_o;
-
-  // Connect toplevel OBI signals to internal interfaces
-  assign instr_req_o                         = c_obi_instr_if_ma_o.s_req.req;
-  assign instr_reqpar_o                      = c_obi_instr_if_ma_o.s_req.reqpar;
-  assign instr_addr_o                        = {c_obi_instr_if_ma_o.req_payload.addr[31:2], 2'b0};
-  assign instr_memtype_o                     = c_obi_instr_if_ma_o.req_payload.memtype;
-  assign instr_prot_o                        = c_obi_instr_if_ma_o.req_payload.prot;
-  assign instr_dbg_o                         = c_obi_instr_if_ma_o.req_payload.dbg;
-  assign instr_achk_o                        = c_obi_instr_if_ma_o.req_payload.achk;
-  assign c_obi_instr_if_ma_i.s_gnt.gnt          = instr_gnt_i;
-  assign c_obi_instr_if_ma_i.s_gnt.gntpar       = instr_gntpar_i;
-  assign c_obi_instr_if_ma_i.s_rvalid.rvalid    = instr_rvalid_i;
-  assign c_obi_instr_if_ma_i.s_rvalid.rvalidpar = instr_rvalidpar_i;
-  assign c_obi_instr_if_ma_i.resp_payload.rdata = instr_rdata_i;
-  assign c_obi_instr_if_ma_i.resp_payload.err   = instr_err_i;
-  assign c_obi_instr_if_ma_i.resp_payload.rchk  = instr_rchk_i;
-  assign c_obi_instr_if_ma_i.resp_payload.integrity_err = 1'b0; // Tie off here, will we populated in instr_obi_interface.
-  assign c_obi_instr_if_ma_i.resp_payload.integrity     = 1'b0; // Tie off here, will we populated in instr_obi_interface.
-
-  assign data_req_o                          = c_obi_data_if_ma_o.s_req.req;
-  assign data_reqpar_o                       = c_obi_data_if_ma_o.s_req.reqpar;
-  assign data_we_o                           = c_obi_data_if_ma_o.req_payload.we;
-  assign data_be_o                           = c_obi_data_if_ma_o.req_payload.be;
-  assign data_addr_o                         = c_obi_data_if_ma_o.req_payload.addr;
-  assign data_memtype_o                      = c_obi_data_if_ma_o.req_payload.memtype;
-  assign data_prot_o                         = c_obi_data_if_ma_o.req_payload.prot;
-  assign data_dbg_o                          = c_obi_data_if_ma_o.req_payload.dbg;
-  assign data_wdata_o                        = c_obi_data_if_ma_o.req_payload.wdata;
-  assign data_achk_o                         = c_obi_data_if_ma_o.req_payload.achk;
-  assign c_obi_data_if_ma_i.s_gnt.gnt           = data_gnt_i;
-  assign c_obi_data_if_ma_i.s_gnt.gntpar        = data_gntpar_i;
-  assign c_obi_data_if_ma_i.s_rvalid.rvalid     = data_rvalid_i;
-  assign c_obi_data_if_ma_i.s_rvalid.rvalidpar  = data_rvalidpar_i;
-  assign c_obi_data_if_ma_i.resp_payload.rdata  = data_rdata_i;
-  assign c_obi_data_if_ma_i.resp_payload.err    = data_err_i;
-  assign c_obi_data_if_ma_i.resp_payload.rchk   = data_rchk_i;
-  assign c_obi_data_if_ma_i.resp_payload.integrity_err = 1'b0; // Tie off here, will we populated in data_obi_interface.
-  assign c_obi_data_if_ma_i.resp_payload.integrity     = 1'b0; // Tie off here, will we populated in data_obi_interface.
-
-  assign debug_havereset_o = ctrl_fsm.debug_havereset;
-  assign debug_halted_o    = ctrl_fsm.debug_halted;
-  assign debug_running_o   = ctrl_fsm.debug_running;
-  assign debug_pc_valid_o  = ctrl_fsm.mhpmevent.minstret;
-  assign debug_pc_o        = ex_wb_pipe.pc;
-
-  // Used (only) by verification environment
-  assign irq_ack   = ctrl_fsm.irq_ack;
-  assign irq_id    = ctrl_fsm.irq_id;
-  assign irq_level = ctrl_fsm.irq_level;
-  assign irq_priv  = ctrl_fsm.irq_priv;
-  assign irq_shv   = ctrl_fsm.irq_shv;
-  assign dbg_ack   = ctrl_fsm.dbg_ack;
-
-  // Gate off the internal debug_request signal if debug support is not configured.
-  assign debug_req_gated = DEBUG ? debug_req_i : 1'b0;
-
-  //////////////////////////////////////////////////////////////////////////////////////////////
-  //   ____ _            _      __  __                                                   _    //
-  //  / ___| | ___   ___| | __ |  \/  | __ _ _ __   __ _  __ _  ___ _ __ ___   ___ _ __ | |_  //
-  // | |   | |/ _ \ / __| |/ / | |\/| |/ _` | '_ \ / _` |/ _` |/ _ \ '_ ` _ \ / _ \ '_ \| __| //
-  // | |___| | (_) | (__|   <  | |  | | (_| | | | | (_| | (_| |  __/ | | | | |  __/ | | | |_  //
-  //  \____|_|\___/ \___|_|\_\ |_|  |_|\__,_|_| |_|\__,_|\__, |\___|_| |_| |_|\___|_| |_|\__| //
-  //                                                     |___/                                //
-  //////////////////////////////////////////////////////////////////////////////////////////////
-
-  cv32e41s_sleep_unit
-  #(
-    .LIB                        ( LIB                  )
-  )
-  sleep_unit_i
-  (
-    // Clock, reset interface
-    .clk_ungated_i              ( clk_i                ),       // Ungated clock
-    .rst_n                      ( rst_ni               ),
-    .clk_gated_o                ( clk                  ),       // Gated clock
-    .scan_cg_en_i               ( scan_cg_en_i         ),
-
-    // Core sleep
-    .core_sleep_o               ( core_sleep_o         ),
-
-    // Fetch enable
-    .fetch_enable_i             ( fetch_enable_i       ),
-    .fetch_enable_o             ( fetch_enable         ),
-
-    // Core status
-    .if_busy_i                  ( if_busy              ),
-    .lsu_busy_i                 ( lsu_busy             ),
-
-    // Inputs from controller (including busy)
-    .ctrl_fsm_i                 ( ctrl_fsm             )
+  // Masks for tcm memories
+  localparam logic [31:0] TCM_INST_MASK     = ~(TCM_INST_SIZE-1); 
+  localparam logic [31:0] TCM_DATA_MASK     = ~(TCM_DATA_SIZE-1); 
+  localparam logic [31:0] RPM_MASK          = ~(RPM_SIZE-1);
+  
+  // Number of internal memories containing instructions
+  localparam NrInstMems = 2;
+  // Number of internal memories containing data 
+  localparam NrDataMems = 4; 
+
+  localparam logic [31:0] data_tcm_mask = TCM_INST_SIZE-1;
+  localparam logic [31:0] i_tcm_mask    = TCM_DATA_SIZE-1;
+  localparam logic [31:0] rpm_mask      = RPM_SIZE-1;
+  
+
+  logic           core_instr_req      [1];   // instruction req, from the core to the mem/tcm
+  logic           core_instr_gnt      [1];   // instruction grant, from the mem/tcm to the core
+  logic [31:0]    core_instr_addr     [1];   // requeste address for IF, from the core to the mem/tcm
+  logic           core_instr_rvalid   [1];   // tcm/memory signals that the data on the bus is valid
+  logic [31:0]    core_instr_rdata    [1];   // core input Instruction from tcm/mem
+  logic           core_instr_err      [1];   // Always 0
+
+  // Not used because instruction doesn't
+  logic           core_instr_we       [1];
+  logic [ 3:0]    core_instr_be       [1];
+  logic [31:0]    core_instr_wdata    [1];
+  // Memories for instruction fetch
+  logic           if_mem_instr_req    [NrInstMems]; // Input request from the internal core
+  logic [31:0]    if_mem_instr_addr   [NrInstMems]; // Input address from the internal core
+  logic           if_mem_instr_rvalid [NrInstMems]; // TCM/Mem confirms that the response is valid
+  logic [31:0]    if_mem_instr_rdata  [NrInstMems]; // TCM/Mem out data 
+  logic           if_mem_instr_err    [NrInstMems]; // TCM/Mem error 
+  // Not writing in IF
+  logic           if_mem_instr_we     [NrInstMems];
+  logic [ 3:0]    if_mem_instr_be     [NrInstMems];
+  logic [31:0]    if_mem_instr_wdata  [NrInstMems];
+
+  //  IF address mapping
+  logic [31:0] if_mem_addr [NrInstMems];
+  logic [31:0] if_mem_addr_mask [NrInstMems];
+
+  // Base addresses for IF mem and ram 
+  //assign if_mem_addr[Out]         = MEM_OUT_START;
+  //assign if_mem_addr_mask[Out]    = MEM_OUT_MASK;
+  assign if_mem_addr[TcmInst]     = TCM_INST_START; 
+  assign if_mem_addr_mask[TcmInst]   = TCM_INST_MASK;
+  // Tie-off unused error signals
+  //assign if_mem_instr_err[Out]  = 1'b0;
+  assign if_mem_instr_err[TcmInst] = 1'b0;
+
+  logic           core_data_req      [1];   // data req, from the core to the mem/tcm
+  logic           core_data_gnt      [1];   // data grant, from the mem/tcm to the core
+  logic [31:0]    core_data_addr     [1];   // requeste address from the core LSU to the mem/tcm
+  logic           core_data_rvalid   [1];   // tcm/memory signals that the data on the bus is valid
+  logic [31:0]    core_data_rdata    [1];   // core input Data from tcm/mem
+  logic           core_data_err      [1];   // Always 0
+
+  // Not used because instruction doesn't
+  logic           core_data_we       [1];
+  logic [ 3:0]    core_data_be       [1];
+  logic [31:0]    core_data_wdata    [1];
+  // Memories for instruction fetch
+  logic           data_mem_req    [NrDataMems]; // Input request from the internal core
+  logic [31:0]    data_mem_addr   [NrDataMems]; // Input address from the internal core
+  logic           data_mem_rvalid [NrDataMems]; // TCM/Mem confirms that the response is valid
+  logic [31:0]    data_mem_rdata  [NrDataMems]; // TCM/Mem out data 
+  logic           data_mem_err    [NrDataMems]; // TCM/Mem error 
+  logic           data_mem_we     [NrDataMems];
+  logic [ 3:0]    data_mem_be     [NrDataMems];
+  logic [31:0]    data_mem_wdata  [NrDataMems];
+
+  // Device address mapping
+  logic [31:0] data_mem_addr_base [NrDataMems];
+  logic [31:0] data_mem_addr_mask [NrDataMems];
+
+  logic [31:0] data_tcm_a_addr;
+  logic [31:0] i_tcm_a_addr;
+  logic [31:0] i_tcm_b_addr;
+  logic [31:0] rpm_addr;
+
+  // Base addresses for IF mem and ram 
+  //assign data_mem_addr_base[Out]    = MEM_OUT_START;
+  //assign data_mem_addr_mask[Out]    = MEM_OUT_MASK;
+  assign data_mem_addr_base[TcmInst]    = TCM_INST_START; // to change into tcm start
+  assign data_mem_addr_mask[TcmInst]    = TCM_INST_MASK;
+  assign data_mem_addr_base[TcmData]    = TCM_DATA_START; // to change into tcm start
+  assign data_mem_addr_mask[TcmData]    = TCM_DATA_MASK;
+  assign data_mem_addr_base[RpmMem]     = RPM_START; 
+  assign data_mem_addr_mask[RpmMem]     = RPM_MASK;
+
+  // Tie-off unused error signals
+  //assign device_err[Out]  = 1'b0;
+  assign data_mem_err[TcmInst] = 1'b0;
+
+  assign data_tcm_a_addr = data_tcm_mask & data_mem_addr[TcmData];
+  assign i_tcm_a_addr = i_tcm_mask & data_mem_addr[TcmInst];
+  assign i_tcm_b_addr = i_tcm_mask & if_mem_instr_addr[TcmInst];
+  assign rpm_addr = rpm_mask & data_mem_addr[RpmMem];
+
+  // RPM optional signals
+
+  logic			       							pmp_lsu_req, pmp_if_req;
+  logic [31:0]			 						pmp_lsu_addr, pmp_if_addr;
+  logic        									pmp_lsu_rvalid, pmp_if_rvalid;
+  logic [31:0] 									pmp_lsu_rdata_b0, pmp_if_rdata_b0;
+  logic [31:0] 									pmp_lsu_rdata_b1, pmp_if_rdata_b1;
+
+  //////////////////////////////////////////////
+  //    _____       _         ___             // 
+  //    \_   \_ __ | |_      / __\_   _ ___   //
+  //     / /\/ '_ \| __|    /__\// | | / __|  //
+  //  /\/ /_ | | | | |_ _  / \/  \ |_| \__ \  //  
+  //  \____/ |_| |_|\__(_) \_____/\__,_|___/  //
+  //                                          //
+  //////////////////////////////////////////////
+
+  // Creating the internal bus similarly to demo system bus.
+  cv32e41s_int_bus #(
+    .NrDataMems    ( NrDataMems ),
+    .NrInstMems    (NrInstMems),
+    .NrHosts      ( 1   ),
+    .DataWidth    ( 32        ),
+    .AddressWidth ( 32        )
+  ) u_int_bus (
+    // Standard clock signals
+    .clk_i               (clk_i),
+    .rst_ni              (rst_ni),
+    
+    // Data Hosts
+    .host_req_data_i          (core_data_req     ),
+    .host_gnt_data_o          (core_data_gnt     ),
+    .host_addr_data_i         (core_data_addr    ),
+    .host_we_data_i           (core_data_we      ),
+    .host_be_data_i           (core_data_be      ),
+    .host_wdata_data_i        (core_data_wdata   ),
+    .host_rvalid_data_o       (core_data_rvalid  ),
+    .host_rdata_data_o        (core_data_rdata   ),
+    .host_err_data_o          (core_data_err     ),
+    // Inst hosts
+  
+    .host_req_inst_i          (core_instr_req     ),
+    .host_gnt_inst_o          (core_instr_gnt     ),
+    .host_addr_inst_i         (core_instr_addr    ),
+    .host_we_inst_i           (core_instr_we      ),
+    .host_be_inst_i           (core_instr_be      ),
+    .host_wdata_inst_i        (core_instr_wdata   ),
+    .host_rvalid_inst_o       (core_instr_rvalid  ),
+    .host_rdata_inst_o        (core_instr_rdata   ),
+    .host_err_inst_o          (core_instr_err     ),
+    // Data memories
+    .mem_req_data_o        (data_mem_req   ),
+    .mem_addr_data_o       (data_mem_addr  ),
+    .mem_we_data_o         (data_mem_we    ),
+    .mem_be_data_o         (data_mem_be    ),
+    .mem_wdata_data_o      (data_mem_wdata ),
+    .mem_rvalid_data_i     (data_mem_rvalid),
+    .mem_rdata_data_i      (data_mem_rdata ),
+    .mem_err_data_i        (data_mem_err   ),
+    // Instr memories
+    .mem_req_inst_o        (if_mem_instr_req   ),
+    .mem_addr_inst_o       (if_mem_instr_addr  ),
+    .mem_we_inst_o         (if_mem_instr_we    ),
+    .mem_be_inst_o         (if_mem_instr_be    ),
+    .mem_wdata_inst_o      (if_mem_instr_wdata ),
+    .mem_rvalid_inst_i     (if_mem_instr_rvalid),
+    .mem_rdata_inst_i      (if_mem_instr_rdata ),
+    .mem_err_inst_i        (if_mem_instr_err   ),
+    // Data mem base and mask
+    .cfg_mem_data_addr_base(data_mem_addr_base),
+    .cfg_mem_data_addr_mask(data_mem_addr_mask),
+    // Inst mem base and mask
+    .cfg_mem_inst_addr_base(if_mem_addr),
+    .cfg_mem_inst_addr_mask(if_mem_addr_mask)
   );
 
-  /////////////////////////////////////
-  //      _    _           _         //
-  //     / \  | | ___ _ __| |_ ___   //
-  //    / _ \ | |/ _ \ '__| __/ __|  //
-  //   / ___ \| |  __/ |  | |_\__ \  //
-  //  /_/   \_\_|\___|_|   \__|___/  //
-  //                                 //
-  /////////////////////////////////////
+////////////////////////////////////
+//   _                            //
+//  (_)_ __   ___ ___  _ __ ___   //
+//  | | '_ \ / __/ _ \| '__/ _ \  //
+//  | | | | | (_| (_) | | |  __/  //
+//  |_|_| |_|\___\___/|_|  \___|  //
+//                                //
+////////////////////////////////////
 
-  assign itf_int_err     = integrity_err_if || lsu_integrity_err;
-  assign itf_prot_err    = protocol_err_if  || lsu_protocol_err;
+  // Istantiate the incore, cv32e41s
+  cv32e41s_incore #(
+      .LIB                                     ( LIB ),
+      .RV32                                    ( RV32 ),
+      .B_EXT                                   ( B_EXT ),
+      .M_EXT                                   ( M_EXT ),
+      .DEBUG                                   ( DEBUG ),
+      .DM_REGION_START                         ( DM_REGION_START ),
+      .DM_REGION_END                           ( DM_REGION_END ),
+      .DBG_NUM_TRIGGERS                        ( DBG_NUM_TRIGGERS ),
+      .PMA_NUM_REGIONS                         ( PMA_NUM_REGIONS ),
+      .CLIC                                    ( CLIC ),
+      .CLIC_ID_WIDTH                           ( CLIC_ID_WIDTH ),
+      .CLIC_INTTHRESHBITS                      ( CLIC_INTTHRESHBITS ),
+      .PMP_GRANULARITY                         ( PMP_GRANULARITY ),
+      .PMP_NUM_REGIONS                         ( PMP_NUM_REGIONS ),
+      .PMP_MSECCFG_RV                          ( PMP_MSECCFG_RV ),
+      .LFSR0_CFG                               ( LFSR0_CFG ),
+      .LFSR1_CFG                               ( LFSR1_CFG ), // Do not use default value for LFSR configuration
+      .LFSR2_CFG                               ( LFSR2_CFG ),
+      
+      .XPMP_ENABLE                             ( XPMP_ENABLE ),
+      .XPMP_PMR_ENABLE                         ( XPMP_PMR_ENABLE ),              
+      .XPMP_PMR_ENCODING                       ( XPMP_PMR_ENCODING ),   
+      .XPMP_TRIE                               ( XPMP_TRIE ),   
+      .XPMP_TRIE_CMP                           ( XPMP_TRIE_CMP )  
 
-  cv32e41s_alert
-    alert_i
-      (.clk                 ( clk               ),
-       .clk_ungated_i       ( clk_i             ),
-       .rst_n               ( rst_ni            ),
+  ) u_incore (
 
-       // Alert Triggers
-       .ctrl_fsm_i          ( ctrl_fsm          ),
-       .rf_ecc_err_i        ( rf_ecc_err        ),
-       .pc_err_i            ( pc_err_if         ),
-       .csr_err_i           ( csr_err           ),
-       .itf_int_err_i       ( itf_int_err       ),
-       .itf_prot_err_i      ( itf_prot_err      ),
-       .lfsr_lockup_i       ( lfsr_lockup       ),
+  .clk_i (clk_i),
+  .rst_ni (rst_ni),
+  .scan_cg_en_i (scan_cg_en_i),   
 
-       // Trigger Outputs
-       .alert_minor_o       ( alert_minor_o     ),
-       .alert_major_o       ( alert_major_o     )
-       );
+  .boot_addr_i (boot_addr_i),
+  .dm_exception_addr_i (dm_exception_addr_i),
+  .dm_halt_addr_i (dm_halt_addr_i),
+  .mhartid_i (mhartid_i),
+  .mimpid_patch_i (mimpid_patch_i),
+  .mtvec_addr_i (mtvec_addr_i),
 
+  // Instruction memory interface
+  .instr_req_o (core_instr_req[0]),
+  .instr_gnt_i (1'b1),
+  .instr_rvalid_i (core_instr_rvalid[0]),
+  .instr_addr_o (core_instr_addr[0]),
+  .instr_memtype_o (),
+  .instr_prot_o (),
+  .instr_dbg_o (),
+  .instr_rdata_i (core_instr_rdata[0]),
+  .instr_err_i ('0),
 
-  //////////////////////////////////////////////////
-  //   ___ _____   ____ _____  _    ____ _____    //
-  //  |_ _|  ___| / ___|_   _|/ \  / ___| ____|   //
-  //   | || |_    \___ \ | | / _ \| |  _|  _|     //
-  //   | ||  _|    ___) || |/ ___ \ |_| | |___    //
-  //  |___|_|     |____/ |_/_/   \_\____|_____|   //
-  //                                              //
-  //////////////////////////////////////////////////
-  cv32e41s_if_stage
-  #(
-    .RV32                ( RV32                     ),
-    .B_EXT               ( B_EXT                    ),
-    .PMA_NUM_REGIONS     ( PMA_NUM_REGIONS          ),
-    .PMA_CFG             ( PMA_CFG                  ),
-    .PMP_GRANULARITY     ( PMP_GRANULARITY           ),
-    .PMP_NUM_REGIONS     ( PMP_NUM_REGIONS           ),
-    .DUMMY_INSTRUCTIONS  ( SECURE                    ),
-    .MTVT_ADDR_WIDTH     ( MTVT_ADDR_WIDTH          ),
-    .CLIC                ( CLIC                     ),
-    .CLIC_ID_WIDTH       ( CLIC_ID_WIDTH            ),
-    .ZC_EXT              ( ZC_EXT                   ),
-    .M_EXT               ( M_EXT                    ),
-    .DEBUG               ( DEBUG                    ),
-    .DM_REGION_START     ( DM_REGION_START          ),
-    .DM_REGION_END       ( DM_REGION_END            )
-  )
-  if_stage_i
-  (
-    .clk                 ( clk                      ),
-    .rst_n               ( rst_ni                   ),
+  .instr_reqpar_o (),           // secure
+  .instr_gntpar_i ('0),         // secure
+  .instr_rvalidpar_i ('0),      // secure
+  .instr_achk_o (),             // secure
+  .instr_rchk_i ('0),           // secure
 
-    .boot_addr_i         ( boot_addr_i              ), // Boot address
-    .branch_target_ex_i  ( branch_target_ex         ), // Branch target address
-    .dm_exception_addr_i ( dm_exception_addr_i      ), // Debug mode exception address
-    .dm_halt_addr_i      ( dm_halt_addr_i           ), // Debug mode halt address
-    .dpc_i               ( dpc                      ), // Debug PC (restore upon return from debug)
-    .jump_target_id_i    ( jump_target_id           ), // Jump target address
-    .mepc_i              ( mepc                     ), // Exception PC (restore upon return from exception/interrupt)
-    .mtvec_addr_i        ( mtvec_addr               ), // Exception/interrupt address (MSBs only)
-    .mtvt_addr_i         ( mtvt_addr                ), // CLIC vector base
-    .jvt_mode_i          ( jvt_mode                 ),
+  // Data memory interface
+  .data_req_o (core_data_req[0]),
+  .data_gnt_i (1'b1),
+  .data_rvalid_i (core_data_rvalid[0]),
+  .data_addr_o (core_data_addr[0]),
+  .data_be_o (core_data_be[0]),
+  .data_we_o (core_data_we[0]),
+  .data_wdata_o (core_data_wdata[0]),
+  .data_memtype_o (),
+  .data_prot_o (),
+  .data_dbg_o (),
+  .data_rdata_i (core_data_rdata[0]),
+  .data_err_i (core_data_err[0]),
 
-    .branch_decision_ex_i( branch_decision_ex       ),
+  // RPM LSU implicit interface
+  .pmp_lsu_req_o        ( pmp_lsu_req           ), 
+  .pmp_lsu_addr_o       ( pmp_lsu_addr          ),
+  .pmp_lsu_rvalid_i     ( pmp_lsu_rvalid        ),
+  .pmp_lsu_rdata_b0_i   ( pmp_lsu_rdata_b0         ),
+  .pmp_lsu_rdata_b1_i   ( pmp_lsu_rdata_b1         ),
 
-    .last_sec_op_id_i    ( last_sec_op_id           ),
-    .pc_err_o            ( pc_err_if                ),
+  // RPM IF implicit interface
+  .pmp_if_req_o        ( pmp_if_req             ), 
+  .pmp_if_addr_o       ( pmp_if_addr            ),
+  .pmp_if_rvalid_i     ( pmp_if_rvalid          ),
+  .pmp_if_rdata_b0_i   ( pmp_if_rdata_b0           ),
+  .pmp_if_rdata_b1_i   ( pmp_if_rdata_b1           ),
 
-    .c_obi_instr_if_ma_i ( c_obi_instr_if_ma_i      ), // Instruction bus interface
-    .c_obi_instr_if_ma_o ( c_obi_instr_if_ma_o      ), // Instruction bus interface
+  .data_reqpar_o (),            // secure
+  .data_gntpar_i ('0),          // secure
+  .data_rvalidpar_i (),         // secure
+  .data_achk_o (),              // secure
+  .data_rchk_i (),              // secure
 
-    .if_id_pipe_o        ( if_id_pipe               ),
-    .id_ex_pipe_i        ( id_ex_pipe               ),
+  // Cycle count
+  .mcycle_o (mcycle_o),                
 
-    .ctrl_fsm_i          ( ctrl_fsm                 ),
-    .trigger_match_i     ( trigger_match_if         ),
+  // Basic interrupt architecture
+  .irq_i (irq_i),
 
-    .pc_if_o             ( pc_if                    ),
-    .csr_mtvec_init_o    ( csr_mtvec_init_if        ),
-    .if_busy_o           ( if_busy                  ),
-    .ptr_in_if_o         ( ptr_in_if                ),
-    .priv_lvl_if_o       ( priv_lvl_if              ),
+  // Event wakeup signals
+  .wu_wfe_i (wu_wfe_i),   // Wait-for-event wakeup
 
-    .last_op_o           ( last_op_if               ),
-    .abort_op_o          ( abort_op_if              ),
+  // CLIC interrupt architecture
+  .clic_irq_i (clic_irq_i),
+  .clic_irq_id_i (clic_irq_id_i),
+  .clic_irq_level_i (clic_irq_level_i),
+  .clic_irq_priv_i (clic_irq_priv_i),
+  .clic_irq_shv_i (clic_irq_shv_i),
 
-    // Pipeline handshakes
-    .if_valid_o          ( if_valid                 ),
-    .id_ready_i          ( id_ready                 ),
-    .id_valid_i          ( id_valid                 ),
-    .ex_ready_i          ( ex_ready                 ),
-    .ex_valid_i          ( ex_valid                 ),
-    .wb_ready_i          ( wb_ready                 ),
+  // Fence.i flush handshake
+  .fencei_flush_req_o (fencei_flush_req_o),
+  .fencei_flush_ack_i (fencei_flush_ack_i),
 
-    // CSR registers
-    .csr_pmp_i           ( csr_pmp                  ),
-    .mstateen0_i         ( mstateen0                ),
+  // Security Alerts
+  .alert_minor_o (alert_minor_o),          
+  .alert_major_o (alert_major_o),         
+  // Debug interface
+  .debug_req_i (debug_req_i),
+  .debug_havereset_o (debug_havereset_o),
+  .debug_running_o (debug_running_o),
+  .debug_halted_o (debug_running_o),
+  .debug_pc_valid_o (debug_pc_valid_o),
+  .debug_pc_o (debug_pc_o),
 
-    // Privilege level
-    .priv_lvl_ctrl_i     ( priv_lvl_if_ctrl         ),
-
-    // Dummy Instruction control
-    .xsecure_ctrl_i      ( xsecure_ctrl             ),
-    .lfsr_shift_o        ( lfsr_shift_if            ),
-
-    .integrity_err_o     ( integrity_err_if         ),
-    .protocol_err_o      ( protocol_err_if          )
-);
-
-  /////////////////////////////////////////////////
-  //   ___ ____    ____ _____  _    ____ _____   //
-  //  |_ _|  _ \  / ___|_   _|/ \  / ___| ____|  //
-  //   | || | | | \___ \ | | / _ \| |  _|  _|    //
-  //   | || |_| |  ___) || |/ ___ \ |_| | |___   //
-  //  |___|____/  |____/ |_/_/   \_\____|_____|  //
-  //                                             //
-  /////////////////////////////////////////////////
-  cv32e41s_id_stage
-  #(
-    .RV32                         ( RV32                      ),
-    .B_EXT                        ( B_EXT                     ),
-    .M_EXT                        ( M_EXT                     ),
-    .REGFILE_NUM_READ_PORTS       ( REGFILE_NUM_READ_PORTS    ),
-    .CLIC                         ( CLIC                      )
-  )
-  id_stage_i
-  (
-    .clk                          ( clk                       ),     // Gated clock
-    .rst_n                        ( rst_ni                    ),
-
-    // Jumps and branches
-    .jmp_target_o                 ( jump_target_id            ),
-
-    // IF/ID pipeline
-    .if_id_pipe_i                 ( if_id_pipe                ),
-
-    // ID/EX pipeline
-    .id_ex_pipe_o                 ( id_ex_pipe                ),
-
-    // EX/WB pipeline
-    .ex_wb_pipe_i                 ( ex_wb_pipe                ),
-
-    // Controller
-    .ctrl_byp_i                   ( ctrl_byp                  ),
-    .ctrl_fsm_i                   ( ctrl_fsm                  ),
-
-    // CSR ID/EX
-    .mstatus_i                    ( mstatus                   ),
-    .xsecure_ctrl_i               ( xsecure_ctrl              ),
-    .mcause_i                     ( mcause                    ),
-    .jvt_addr_i                   ( jvt_addr                  ),
-
-    // Register file write back and forwards
-    .rf_wdata_ex_i                ( rf_wdata_ex               ),
-    .rf_wdata_wb_i                ( rf_wdata_wb               ),
-
-    .alu_en_o                     ( alu_en_id                 ),
-    .alu_jmp_o                    ( alu_jmp_id                ),
-    .alu_jmpr_o                   ( alu_jmpr_id               ),
-    .sys_mret_insn_o              ( sys_mret_insn_id          ),
-    .sys_wfi_insn_o               ( sys_wfi_insn_id           ),
-    .last_sec_op_o                ( last_sec_op_id            ),
-
-    .csr_en_raw_o                 ( csr_en_raw_id             ),
-    .csr_op_o                     ( csr_op_id                 ),
-    .sys_en_o                     ( sys_en_id                 ),
-
-    .first_op_o                   ( first_op_id               ),
-    .last_op_o                    ( last_op_id                ),
-    .abort_op_o                   ( abort_op_id               ),
-
-    .rf_re_o                      ( rf_re_id                  ),
-    .rf_raddr_o                   ( rf_raddr_id               ),
-    .rf_rdata_i                   ( rf_rdata_id               ),
-
-    // Pipeline handshakes
-    .id_ready_o                   ( id_ready                  ),
-    .id_valid_o                   ( id_valid                  ),
-    .ex_ready_i                   ( ex_ready                  ),
-
-    .lfsr_shift_o                 ( lfsr_shift_id             )
-);
-
-  /////////////////////////////////////////////////////
-  //   _______  __  ____ _____  _    ____ _____      //
-  //  | ____\ \/ / / ___|_   _|/ \  / ___| ____|     //
-  //  |  _|  \  /  \___ \ | | / _ \| |  _|  _|       //
-  //  | |___ /  \   ___) || |/ ___ \ |_| | |___      //
-  //  |_____/_/\_\ |____/ |_/_/   \_\____|_____|     //
-  //                                                 //
-  /////////////////////////////////////////////////////
-  cv32e41s_ex_stage
-  #(
-    .B_EXT                      ( B_EXT                        ),
-    .M_EXT                      ( M_EXT                        )
-  )
-  ex_stage_i
-  (
-    .clk                        ( clk                          ),
-    .rst_n                      ( rst_ni                       ),
-
-    // IF/ID pipeline
-    .if_id_pipe_i               ( if_id_pipe                   ),
-
-    // ID/EX pipeline
-    .id_ex_pipe_i               ( id_ex_pipe                   ),
-
-    // EX/WB pipeline
-    .ex_wb_pipe_o               ( ex_wb_pipe                   ),
-
-    // From controller FSM
-    .ctrl_fsm_i                 ( ctrl_fsm                     ),
-
-    // Xsecure control
-    .xsecure_ctrl_i             ( xsecure_ctrl                 ),
-
-    // CSR interface
-    .csr_rdata_i                ( csr_rdata                    ),
-    .csr_illegal_i              ( csr_illegal                  ),
-    .csr_mnxti_read_i           ( csr_mnxti_read               ),
-
-    // Branch decision
-    .branch_decision_o          ( branch_decision_ex           ),
-    .branch_target_o            ( branch_target_ex             ),
-
-    // Register file forwarding
-    .rf_wdata_o                 ( rf_wdata_ex                  ),
-
-    // LSU interface
-    .lsu_valid_i                ( lsu_valid_0                  ),
-    .lsu_ready_o                ( lsu_ready_ex                 ),
-    .lsu_valid_o                ( lsu_valid_ex                 ),
-    .lsu_ready_i                ( lsu_ready_0                  ),
-    .lsu_split_i                ( lsu_split_ex                 ),
-    .lsu_last_op_i              ( lsu_last_op_ex               ),
-    .lsu_first_op_i             ( lsu_first_op_ex              ),
-
-    // Pipeline handshakes
-    .ex_ready_o                 ( ex_ready                     ),
-    .ex_valid_o                 ( ex_valid                     ),
-    .wb_ready_i                 ( wb_ready                     ),
-    .last_op_o                  ( last_op_ex                   ),
-    .first_op_o                 ( first_op_ex                  )
+  // CPU control signals
+  .fetch_enable_i (fetch_enable_i),
+  .core_sleep_o (core_sleep_o)
   );
 
-  ////////////////////////////////////////////////////////////////////////////////////////
-  //    _     ___    _    ____    ____ _____ ___  ____  _____   _   _ _   _ ___ _____   //
-  //   | |   / _ \  / \  |  _ \  / ___|_   _/ _ \|  _ \| ____| | | | | \ | |_ _|_   _|  //
-  //   | |  | | | |/ _ \ | | | | \___ \ | || | | | |_) |  _|   | | | |  \| || |  | |    //
-  //   | |__| |_| / ___ \| |_| |  ___) || || |_| |  _ <| |___  | |_| | |\  || |  | |    //
-  //   |_____\___/_/   \_\____/  |____/ |_| \___/|_| \_\_____|  \___/|_| \_|___| |_|    //
-  //                                                                                    //
-  ////////////////////////////////////////////////////////////////////////////////////////
-
-  cv32e41s_load_store_unit
-  #(
-    .PMP_GRANULARITY       (PMP_GRANULARITY     ),
-    .PMP_NUM_REGIONS       (PMP_NUM_REGIONS     ),
-    .PMA_NUM_REGIONS       (PMA_NUM_REGIONS     ),
-    .PMA_CFG               (PMA_CFG             ),
-    .DBG_NUM_TRIGGERS      (DBG_NUM_TRIGGERS    ),
-    .DEBUG                 (DEBUG               ),
-    .DM_REGION_START       (DM_REGION_START     ),
-    .DM_REGION_END         (DM_REGION_END       )
-  )
-  load_store_unit_i
-  (
-    .clk                   ( clk                ),
-    .rst_n                 ( rst_ni             ),
-
-    // ID/EX pipeline
-    .id_ex_pipe_i          ( id_ex_pipe         ),
-
-    // Controller
-    .ctrl_fsm_i            ( ctrl_fsm           ),
-
-    // Data OBI interface
-    .c_obi_data_if_ma_i    ( c_obi_data_if_ma_i  ),
-    .c_obi_data_if_ma_o    ( c_obi_data_if_ma_o  ),
-
-    // Control signals
-    .busy_o                ( lsu_busy           ),
-    .interruptible_o       ( lsu_interruptible  ),
-
-    // Trigger match
-    .trigger_match_0_i     ( trigger_match_ex   ),
-
-    // Stage 0 outputs (EX)
-    .lsu_split_0_o         ( lsu_split_ex       ),
-    .lsu_first_op_0_o      ( lsu_first_op_ex    ),
-    .lsu_last_op_0_o       ( lsu_last_op_ex     ),
-
-    // Outputs to trigger module
-    .lsu_addr_o            ( lsu_addr_ex        ),
-    .lsu_we_o              ( lsu_we_ex          ),
-    .lsu_be_o              ( lsu_be_ex          ),
-
-    // Stage 1 outputs (WB)
-    // lsu_err_1_o has WB timing and is used by the controller. Does not go through the wb_stage, and does not have
-    // any sticky bits associated with it. The sticky bits for LSU related signals within the WB stage are only needed
-    // for MPU errors and watchpoint triggers. All LSU instructions that gets through the WPT and MPU will retire immediately
-    // when data_rvalid arrives. data_err_i will always come from the bus.
-    .lsu_err_1_o           ( lsu_err_wb         ),
-    .lsu_rdata_1_o         ( lsu_rdata_wb       ),
-    .lsu_mpu_status_1_o    ( lsu_mpu_status_wb  ),
-    .lsu_wpt_match_1_o     ( lsu_wpt_match_wb   ),
-
-    // CSR registers
-    .csr_pmp_i             ( csr_pmp            ),
-
-    // Privilege level
-    .priv_lvl_lsu_i        ( priv_lvl_lsu       ),
-
-    // Valid/ready
-    .valid_0_i             ( lsu_valid_ex       ), // First LSU stage (EX)
-    .ready_0_o             ( lsu_ready_0        ),
-    .valid_0_o             ( lsu_valid_0        ),
-    .ready_0_i             ( lsu_ready_ex       ),
-
-    .valid_1_i             ( lsu_valid_wb       ), // Second LSU stage (WB)
-    .ready_1_o             ( lsu_ready_1        ),
-    .valid_1_o             ( lsu_valid_1        ),
-    .ready_1_i             ( lsu_ready_wb       ),
-
-    .integrity_err_o       ( lsu_integrity_err  ),
-    .protocol_err_o        ( lsu_protocol_err   ),
-
-    .xsecure_ctrl_i        ( xsecure_ctrl       )
-);
-
-  ////////////////////////////////////////////////////////////////////////////////////////
-  // Write back stage                                                                   //
-  ////////////////////////////////////////////////////////////////////////////////////////
-
-  cv32e41s_wb_stage
-  #(
-      .DEBUG                    ( DEBUG                        )
-  )
-  wb_stage_i
-  (
-    .clk                        ( clk                          ), // Not used in RTL; only used by assertions
-    .rst_n                      ( rst_ni                       ), // Not used in RTL; only used by assertions
-
-    // EX/WB pipeline
-    .ex_wb_pipe_i               ( ex_wb_pipe                   ),
-
-    // Controller
-    .ctrl_fsm_i                 ( ctrl_fsm                     ),
-
-    // LSU
-    .lsu_rdata_i                ( lsu_rdata_wb                 ),
-    .lsu_mpu_status_i           ( lsu_mpu_status_wb            ),
-    .lsu_wpt_match_i            ( lsu_wpt_match_wb             ),
-
-    // Write back to register file
-    .rf_we_wb_o                 ( rf_we_wb                     ),
-    .rf_waddr_wb_o              ( rf_waddr_wb                  ),
-    .rf_wdata_wb_o              ( rf_wdata_wb                  ),
-
-    // LSU handshakes
-    .lsu_valid_i                ( lsu_valid_1                  ),
-    .lsu_ready_o                ( lsu_ready_wb                 ),
-    .lsu_valid_o                ( lsu_valid_wb                 ),
-    .lsu_ready_i                ( lsu_ready_1                  ),
-
-    .data_stall_o               ( data_stall_wb                ),
-
-    // Valid/ready
-    .wb_ready_o                 ( wb_ready                     ),
-    .wb_valid_o                 ( wb_valid                     ),
-
-    .wpt_match_wb_o             ( wpt_match_wb                 ),
-    .mpu_status_wb_o            ( mpu_status_wb                ),
-
-    // CSR/CLIC pointer inputs
-    .clic_pa_valid_i            ( csr_clic_pa_valid            ),
-    .clic_pa_i                  ( csr_clic_pa                  ),
-
-    .last_op_o                  ( last_op_wb                   ),
-    .abort_op_o                 ( abort_op_wb                  )
+  //////////////////////////////////////////////////////////////////////////////
+  //   _____ _       _     _   _           ___                  _          _  //
+  //  /__   (_) __ _| |__ | |_| |_   _    / __\___  _   _ _ __ | | ___  __| | //
+  //    / /\/ |/ _` | '_ \| __| | | | |  / /  / _ \| | | | '_ \| |/ _ \/ _` | //  
+  //   / /  | | (_| | | | | |_| | |_| | / /__| (_) | |_| | |_) | |  __/ (_| | //
+  //   \/   |_|\__, |_| |_|\__|_|\__, | \____/\___/ \__,_| .__/|_|\___|\__,_| //
+  //           |___/             |___/                   |_|                  //
+  //                                                _                         //
+  //                /\/\   ___ _ __ ___   ___  _ __(_) ___  ___               //  
+  //               /    \ / _ \ '_ ` _ \ / _ \| '__| |/ _ \/ __|              //
+  //              / /\/\ \  __/ | | | | | (_) | |  | |  __/\__ \              //
+  //              \/    \/\___|_| |_| |_|\___/|_|  |_|\___||___/              //
+  //                                                                          //
+  //////////////////////////////////////////////////////////////////////////////
+  
+  // instantiating the Instr TCM
+  cv32e41s_tcm #(
+    .A_WID(32),
+    .D_WID(32)
+  )inst_tcm(
+    .clk_i(clk_i),
+    .rst_ni(rst_ni),
+    // Data port
+    .a_req_i(data_mem_req[TcmInst]), 
+    .a_we_i(data_mem_we[TcmInst]),
+    .a_be_i(data_mem_be[TcmInst]),
+    .a_addr_i(i_tcm_a_addr),
+    .a_wdata_i(data_mem_wdata[TcmInst]),
+    .a_rvalid_o(data_mem_rvalid[TcmInst]),
+    .a_rdata_o(data_mem_rdata[TcmInst]),
+    //IF port
+    .b_req_i(if_mem_instr_req[TcmInst]),
+    .b_we_i(1'b0), // not writing
+    .b_be_i(4'b0), // 0 mask, because we're not writing
+    .b_addr_i(i_tcm_b_addr),
+    .b_wdata_i(32'b0), // not writing in the if port 
+    .b_rvalid_o(if_mem_instr_rvalid[TcmInst]),
+    .b_rdata_o(if_mem_instr_rdata[TcmInst])
   );
 
-  //////////////////////////////////////
-  //        ____ ____  ____           //
-  //       / ___/ ___||  _ \ ___      //
-  //      | |   \___ \| |_) / __|     //
-  //      | |___ ___) |  _ <\__ \     //
-  //       \____|____/|_| \_\___/     //
-  //                                  //
-  //   Control and Status Registers   //
-  //////////////////////////////////////
-
-  cv32e41s_cs_registers
-  #(
-    .LIB                        ( LIB                    ),
-    .RV32                       ( RV32                   ),
-    .M_EXT                      ( M_EXT                  ),
-    .ZC_EXT                     ( ZC_EXT                 ),
-    .CLIC                       ( CLIC                   ),
-    .CLIC_ID_WIDTH              ( CLIC_ID_WIDTH          ),
-    .CLIC_INTTHRESHBITS         ( CLIC_INTTHRESHBITS     ),
-    .DEBUG                      ( DEBUG                  ),
-    .DBG_NUM_TRIGGERS           ( DBG_NUM_TRIGGERS       ),
-    .NUM_MHPMCOUNTERS           ( NUM_MHPMCOUNTERS       ),
-    .PMP_NUM_REGIONS            ( PMP_NUM_REGIONS        ),
-    .PMP_GRANULARITY            ( PMP_GRANULARITY        ),
-    .PMP_PMPNCFG_RV             ( PMP_PMPNCFG_RV         ),
-    .PMP_PMPADDR_RV             ( PMP_PMPADDR_RV         ),
-    .PMP_MSECCFG_RV             ( PMP_MSECCFG_RV         ),
-    .LFSR0_CFG                  ( LFSR0_CFG              ),
-    .LFSR1_CFG                  ( LFSR1_CFG              ),
-    .LFSR2_CFG                  ( LFSR2_CFG              ),
-    .MTVT_ADDR_WIDTH            ( MTVT_ADDR_WIDTH        )
-  )
-  cs_registers_i
-  (
-    .clk                        ( clk                    ),
-    .rst_n                      ( rst_ni                 ),
-    .scan_cg_en_i               ( scan_cg_en_i           ),
-
-    // Configuration
-    .mhartid_i                  ( mhartid_i              ),
-    .mimpid_patch_i             ( mimpid_patch_i         ),
-    .mtvec_addr_i               ( mtvec_addr_i[31:0]     ),
-    .csr_mtvec_init_i           ( csr_mtvec_init_if      ),
-
-    // CSRs
-    .dcsr_o                     ( dcsr                   ),
-    .dpc_o                      ( dpc                    ),
-    .jvt_addr_o                 ( jvt_addr               ),
-    .jvt_mode_o                 ( jvt_mode               ),
-    .mcause_o                   ( mcause                 ),
-    .mcycle_o                   ( mcycle_o               ),
-    .mepc_o                     ( mepc                   ),
-    .mie_o                      ( mie                    ),
-    .mintstatus_o               ( mintstatus             ),
-    .mintthresh_o               ( mintthresh             ),
-    .mstatus_o                  ( mstatus                ),
-    .mtvec_addr_o               ( mtvec_addr             ),
-    .mtvec_mode_o               ( mtvec_mode             ),
-    .mtvt_addr_o                ( mtvt_addr              ),
-    .mstateen0_o                ( mstateen0              ),
-
-    .priv_lvl_if_ctrl_o         ( priv_lvl_if_ctrl       ),
-    .priv_lvl_lsu_o             ( priv_lvl_lsu           ),
-    .priv_lvl_o                 ( priv_lvl               ),
-
-    .sys_en_id_i                ( sys_en_id              ),
-    .sys_mret_id_i              ( sys_mret_insn_id       ),
-
-    // ID/EX pipeline
-    .id_ex_pipe_i               ( id_ex_pipe             ),
-    .csr_illegal_o              ( csr_illegal            ),
-
-    // EX/WB pipeline
-    .ex_wb_pipe_i               ( ex_wb_pipe             ),
-
-    // From controller_fsm
-    .ctrl_fsm_i                 ( ctrl_fsm               ),
-
-    // To controller_bypass
-    .csr_counter_read_o         ( csr_counter_read       ),
-    .csr_mnxti_read_o           ( csr_mnxti_read         ),
-    .csr_irq_enable_write_o     ( csr_irq_enable_write   ),
-
-    // Interface to CSRs (SRAM like)
-    .csr_rdata_o                ( csr_rdata              ),
-
-    // Interrupts
-    .mip_i                      ( mip                    ),
-    .mnxti_irq_pending_i        ( mnxti_irq_pending      ),
-    .mnxti_irq_id_i             ( mnxti_irq_id           ),
-    .mnxti_irq_level_i          ( mnxti_irq_level        ),
-    .clic_pa_valid_o            ( csr_clic_pa_valid      ),
-    .clic_pa_o                  ( csr_clic_pa            ),
-
-    // PMP
-    .csr_pmp_o                  ( csr_pmp                ),
-
-    // Xsecure
-    .csr_err_o                  ( csr_err                ),
-    .lfsr_lockup_o              ( lfsr_lockup            ),
-    .lfsr_shift_if_i            ( lfsr_shift_if          ),
-    .lfsr_shift_id_i            ( lfsr_shift_id          ),
-    .xsecure_ctrl_o             ( xsecure_ctrl           ),
-
-    // CSR write strobes
-    .csr_wr_in_wb_flush_o       ( csr_wr_in_wb_flush     ),
-
-    // Debug
-    .trigger_match_if_o         ( trigger_match_if       ),
-    .trigger_match_ex_o         ( trigger_match_ex       ),
-    .etrigger_wb_o              ( etrigger_wb            ),
-    .pc_if_i                    ( pc_if                  ),
-    .ptr_in_if_i                ( ptr_in_if              ),
-    .priv_lvl_if_i              ( priv_lvl_if            ),
-    .lsu_valid_ex_i             ( lsu_valid_ex           ),
-    .lsu_addr_ex_i              ( lsu_addr_ex            ),
-    .lsu_we_ex_i                ( lsu_we_ex              ),
-    .lsu_be_ex_i                ( lsu_be_ex              )
+  // instantiating the Data TCM
+  cv32e41s_tcm #(
+    .A_WID(32),
+    .D_WID(32)
+  )data_tcm(
+    .clk_i(clk_i),
+    .rst_ni(rst_ni),
+    // Data port
+    .a_req_i(data_mem_req[TcmData]), 
+    .a_we_i(data_mem_we[TcmData]),
+    .a_be_i(data_mem_be[TcmData]),
+    .a_addr_i(data_tcm_a_addr),
+    .a_wdata_i(data_mem_wdata[TcmData]),
+    .a_rvalid_o(data_mem_rvalid[TcmData]),
+    .a_rdata_o(data_mem_rdata[TcmData]),
+    //IF port, pending 
+    .b_req_i(),
+    .b_we_i(), 
+    .b_be_i(), 
+    .b_addr_i(),
+    .b_wdata_i(), 
+    .b_rvalid_o(),
+    .b_rdata_o()
   );
 
-  ////////////////////////////////////////////////////////////////////
-  //    ____ ___  _   _ _____ ____   ___  _     _     _____ ____    //
-  //   / ___/ _ \| \ | |_   _|  _ \ / _ \| |   | |   | ____|  _ \   //
-  //  | |  | | | |  \| | | | | |_) | | | | |   | |   |  _| | |_) |  //
-  //  | |__| |_| | |\  | | | |  _ <| |_| | |___| |___| |___|  _ <   //
-  //   \____\___/|_| \_| |_| |_| \_\\___/|_____|_____|_____|_| \_\  //
-  //                                                                //
-  ////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////
+//     __            _                 ___           _            _   _               //
+//    /__\ ___  __ _(_) ___  _ __     / _ \_ __ ___ | |_ ___  ___| |_(_) ___  _ __    //
+//   / \/// _ \/ _` | |/ _ \| '_ \   / /_)/ '__/ _ \| __/ _ \/ __| __| |/ _ \| '_ \   //
+//  / _  \  __/ (_| | | (_) | | | | / ___/| | | (_) | ||  __/ (__| |_| | (_) | | | |  //
+//  \/ \_/\___|\__, |_|\___/|_| |_| \/    |_|  \___/ \__\___|\___|\__|_|\___/|_| |_|  //
+//             |___/                                                                  //
+//                                                                                    //
+//                      /\/\   ___ _ __ ___   ___  _ __ _   _                         //
+//                     /    \ / _ \ '_ ` _ \ / _ \| '__| | | |                        //
+//                    / /\/\ \  __/ | | | | | (_) | |  | |_| |                        //
+//                    \/    \/\___|_| |_| |_|\___/|_|   \__, |                        //
+//                                                      |___/                         //
+//                                                                                    //
+////////////////////////////////////////////////////////////////////////////////////////
 
-  cv32e41s_controller
-  #(
-    .REGFILE_NUM_READ_PORTS         ( REGFILE_NUM_READ_PORTS ),
-    .CLIC                           ( CLIC                   ),
-    .CLIC_ID_WIDTH                  ( CLIC_ID_WIDTH          ),
-    .DEBUG                          ( DEBUG                  )
-  )
-  controller_i
-  (
-    .clk                            ( clk                    ),         // Gated clock
-    .rst_n                          ( rst_ni                 ),
+  // Optional: Instantiate the Region Protection Memory
 
-    .fetch_enable_i                 ( fetch_enable           ),
+  if(XPMP_ENABLE && XPMP_TRIE == PMP_TRIE_SUPPORT) begin: rpm_gen
 
-    // From ID/EX pipeline
-    .id_ex_pipe_i                   ( id_ex_pipe             ),
+    cv32e41s_rpm 
+    #(
+        .MemSize    (1024),
+        .AddressWidth (10),
+        .DataWidth  (32)
 
-    .csr_counter_read_i             ( csr_counter_read       ),
-    .csr_mnxti_read_i               ( csr_mnxti_read         ),
-    .csr_irq_enable_write_i         ( csr_irq_enable_write   ),
+    ) rpm (
+        .clk_i      (clk_i  ),
+        .rst_ni     (rst_ni ),
 
-    // From EX/WB pipeline
-    .ex_wb_pipe_i                   ( ex_wb_pipe             ),
-    .mpu_status_wb_i                ( mpu_status_wb          ),
-    .wpt_match_wb_i                 ( wpt_match_wb           ),
+        // This port is only accessible to M-mode, when implicit trie memory probing is inhibited
+        .m_req_i    (data_mem_req[RpmMem]     ), 
+        .m_we_i     (data_mem_we[RpmMem]      ),
+        .m_be_i     (data_mem_be[RpmMem]      ),
+        .m_addr_i   (rpm_addr                 ),
+        .m_wdata_i  (data_mem_wdata[RpmMem]   ),
+        .m_rvalid_o (data_mem_rvalid[RpmMem]  ),
+        .m_rdata_o  (data_mem_rdata[RpmMem]   ),
 
-    // last_op bits
-    .last_op_id_i                   ( last_op_id             ),
-    .last_op_ex_i                   ( last_op_ex             ),
-    .last_op_wb_i                   ( last_op_wb             ),
+        // the following ports are only accessible by non M-mode as read ports
+        .imp_if_req_i    (pmp_if_req), 
+        .imp_if_addr_i   (pmp_if_addr),
+        .imp_if_rvalid_o (pmp_if_rvalid),
+        .imp_if_rdata_b0_o  (pmp_if_rdata_b0),
+        .imp_if_rdata_b1_o  (pmp_if_rdata_b1),
 
-    .abort_op_id_i                  ( abort_op_id            ),
-    .abort_op_wb_i                  ( abort_op_wb            ),
+        .imp_lsu_req_i    (pmp_lsu_req), 
+        .imp_lsu_addr_i   (pmp_lsu_addr),
+        .imp_lsu_rvalid_o (pmp_lsu_rvalid),
+        .imp_lsu_rdata_b0_o  (pmp_lsu_rdata_b0),
+        .imp_lsu_rdata_b1_o  (pmp_lsu_rdata_b1)
 
-    .if_valid_i                     ( if_valid               ),
-    .pc_if_i                        ( pc_if                  ),
-    .last_op_if_i                   ( last_op_if             ),
-    .abort_op_if_i                  ( abort_op_if            ),
 
-    // from IF/ID pipeline
-    .if_id_pipe_i                   ( if_id_pipe             ),
-    .last_sec_op_id_i               ( last_sec_op_id         ),
+    );
 
-    .alu_en_id_i                    ( alu_en_id              ),
-    .alu_jmp_id_i                   ( alu_jmp_id             ),
-    .alu_jmpr_id_i                  ( alu_jmpr_id            ),
-    .sys_en_id_i                    ( sys_en_id              ),
-    .sys_mret_id_i                  ( sys_mret_insn_id       ),
-    .csr_en_raw_id_i                ( csr_en_raw_id          ),
-    .csr_op_id_i                    ( csr_op_id              ),
-    .sys_wfi_id_i                   ( sys_wfi_insn_id        ),
-    .first_op_id_i                  ( first_op_id            ),
+  end
+  
+  // Map out signals for IF
+  assign  instr_req_o=if_mem_instr_req[Out]; 
+  //assign  instr_gnt_i=core_instr_gnt[0]; // This signal is always one 
+  assign  if_mem_instr_rvalid[Out]=instr_rvalid_i;
+  assign  instr_addr_o=if_mem_instr_addr[Out];
+  assign  if_mem_instr_rdata[Out]=instr_rdata_i;
+  // Ram has an error signal differently from tcm that is always 0 
+  assign  if_mem_instr_err[Out]=instr_err_i; 
+  // Pending
+  //assign  instr_memtype_o=
+  //assign  instr_prot_o=,
+  //assign  instr_dbg_o=,
 
-    // LSU
-    .data_stall_wb_i                ( data_stall_wb          ),
-    .lsu_err_wb_i                   ( lsu_err_wb             ),
-    .lsu_busy_i                     ( lsu_busy               ),
-    .lsu_interruptible_i            ( lsu_interruptible      ),
-    .lsu_valid_wb_i                 ( lsu_valid_wb           ),
-
-    // jump/branch control
-    .branch_decision_ex_i           ( branch_decision_ex     ),
-
-    // Interrupt signals
-    .irq_wu_ctrl_i                  ( irq_wu_ctrl            ),
-    .irq_req_ctrl_i                 ( irq_req_ctrl           ),
-    .irq_id_ctrl_i                  ( irq_id_ctrl            ),
-    .irq_clic_shv_i                 ( irq_clic_shv           ),
-    .irq_clic_level_i               ( irq_clic_level         ),
-    .irq_clic_priv_i                ( irq_clic_priv          ),
-
-    // Priviledge level
-    .priv_lvl_i                     ( priv_lvl               ),
-
-    .wu_wfe_i                       ( wu_wfe_i               ),
-
-    // From CSR registers
-    .mtvec_mode_i                   ( mtvec_mode             ),
-    .mcause_i                       ( mcause                 ),
-    .xsecure_ctrl_i                 ( xsecure_ctrl           ),
-    .mintstatus_i                   ( mintstatus             ),
-
-    // Trigger module
-    .etrigger_wb_i                  ( etrigger_wb            ),
-
-    // CSR write strobes
-    .csr_wr_in_wb_flush_i           ( csr_wr_in_wb_flush     ),
-
-    // Debug signals
-    .debug_req_i                    ( debug_req_gated        ),
-    .dcsr_i                         ( dcsr                   ),
-
-    // Register File read, write back and forwards
-    .rf_re_id_i                     ( rf_re_id               ),
-    .rf_raddr_id_i                  ( rf_raddr_id            ),
-
-    // Fencei flush handshake
-    .fencei_flush_ack_i             ( fencei_flush_ack_i     ),
-    .fencei_flush_req_o             ( fencei_flush_req_o     ),
-
-    // Data OBI interface           // UNUSED
-    //.c_obi_data_if_mo_i           ( c_obi_data_if_mo_i     ),
-
-    .id_ready_i                     ( id_ready               ),
-    .id_valid_i                     ( id_valid               ),
-    .ex_ready_i                     ( ex_ready               ),
-    .ex_valid_i                     ( ex_valid               ),
-    .wb_ready_i                     ( wb_ready               ),
-    .wb_valid_i                     ( wb_valid               ),
-
-    .ctrl_byp_o                     ( ctrl_byp               ),
-    .ctrl_fsm_o                     ( ctrl_fsm               )
-  );
-
-  ////////////////////////////////////////////////////////////////////////
-  //  _____      _       _____             _             _ _            //
-  // |_   _|    | |     /  __ \           | |           | | |           //
-  //   | | _ __ | |_    | /  \/ ___  _ __ | |_ _ __ ___ | | | ___ _ __  //
-  //   | || '_ \| __|   | |    / _ \| '_ \| __| '__/ _ \| | |/ _ \ '__| //
-  //  _| || | | | |_ _  | \__/\ (_) | | | | |_| | | (_) | | |  __/ |    //
-  //  \___/_| |_|\__(_)  \____/\___/|_| |_|\__|_|  \___/|_|_|\___|_|    //
-  //                                                                    //
-  ////////////////////////////////////////////////////////////////////////
-
-  generate
-    if (CLIC) begin : gen_clic_interrupt
-      assign mip          = '0;
-
-      cv32e41s_clic_int_controller
-      #(
-          .CLIC_ID_WIDTH (CLIC_ID_WIDTH)
-      )
-      clic_int_controller_i
-      (
-        .clk                  ( clk                ),
-        .rst_n                ( rst_ni             ),
-
-        // CLIC interface
-        .clic_irq_i           ( clic_irq_i         ),
-        .clic_irq_id_i        ( clic_irq_id_i      ),
-        .clic_irq_level_i     ( clic_irq_level_i   ),
-        .clic_irq_priv_i      ( clic_irq_priv_i    ),
-        .clic_irq_shv_i       ( clic_irq_shv_i     ),
-
-        // To controller
-        .irq_req_ctrl_o       ( irq_req_ctrl       ),
-        .irq_id_ctrl_o        ( irq_id_ctrl        ),
-        .irq_wu_ctrl_o        ( irq_wu_ctrl        ),
-        .irq_clic_shv_o       ( irq_clic_shv       ),
-        .irq_clic_level_o     ( irq_clic_level     ),
-        .irq_clic_priv_o      ( irq_clic_priv      ),
-
-        // From cs_registers
-        .mstatus_i            ( mstatus            ),
-        .mintthresh_i         ( mintthresh         ),
-        .mintstatus_i         ( mintstatus         ),
-        .mcause_i             ( mcause             ),
-        .priv_lvl_i           ( priv_lvl           ),
-
-        // To cs_registers
-        .mnxti_irq_pending_o  ( mnxti_irq_pending  ),
-        .mnxti_irq_id_o       ( mnxti_irq_id       ),
-        .mnxti_irq_level_o    ( mnxti_irq_level    )
-      );
-    end else begin : gen_basic_interrupt
-      cv32e41s_int_controller
-      int_controller_i
-      (
-        .clk                  ( clk                ),
-        .rst_n                ( rst_ni             ),
-
-        // External interrupt lines
-        .irq_i                ( irq_i              ),
-
-        // To controller
-        .irq_req_ctrl_o       ( irq_req_ctrl       ),
-        .irq_id_ctrl_o        ( irq_id_ctrl[4:0]   ),
-        .irq_wu_ctrl_o        ( irq_wu_ctrl        ),
-
-        // To with cs_registers
-        .mie_i                ( mie                ),
-        .mstatus_i            ( mstatus            ),
-        .priv_lvl_i           ( priv_lvl           ),
-
-        // To/from with cs_registers
-        .mip_o                ( mip                )
-      );
-
-      // Tie off unused irq_id_ctrl bits
-      assign irq_id_ctrl[9:5] = 5'b00000;
-
-      // CLIC shv not used in basic mode
-      assign irq_clic_shv = 1'b0;
-      assign irq_clic_level = 8'h00;
-      assign irq_clic_priv = 2'b0;
-
-      // CLIC mnxti not used in basic mode
-      assign mnxti_irq_pending = 1'b0;
-      assign mnxti_irq_id      = '0;
-      assign mnxti_irq_level   = '0;
-    end
-  endgenerate
-
-  /////////////////////////////////////////////////////////
-  //  ____  _____ ____ ___ ____ _____ _____ ____  ____   //
-  // |  _ \| ____/ ___|_ _/ ___|_   _| ____|  _ \/ ___|  //
-  // | |_) |  _|| |  _ | |\___ \ | | |  _| | |_) \___ \  //
-  // |  _ <| |__| |_| || | ___) || | | |___|  _ < ___) | //
-  // |_| \_\_____\____|___|____/ |_| |_____|_| \_\____/  //
-  //                                                     //
-  /////////////////////////////////////////////////////////
-
-  // Connect register file write port(s) to regfile inputs
-  assign rf_we[0]    = rf_we_wb;
-  assign rf_waddr[0] = rf_waddr_wb;
-  assign rf_wdata[0] = rf_wdata_wb;
-
-  cv32e41s_register_file_wrapper
-  #(
-    .REGFILE_NUM_READ_PORTS       ( REGFILE_NUM_READ_PORTS ),
-    .RV32                         ( RV32                   )
-  )
-  register_file_wrapper_i
-  (
-    .clk                ( clk         ),
-    .rst_n              ( rst_ni      ),
-
-    .hint_instr_id_i    ( if_id_pipe.instr_meta.hint),
-    .hint_instr_wb_i    ( ex_wb_pipe.instr_meta.hint),
-    .dummy_instr_id_i   ( if_id_pipe.instr_meta.dummy ),
-    .dummy_instr_wb_i   ( ex_wb_pipe.instr_meta.dummy ),
-
-    // ECC error output
-    .ecc_err_o          ( rf_ecc_err         ),
-
-    // Read ports
-    .raddr_i            ( rf_raddr_id ),
-    .rdata_o            ( rf_rdata_id ),
-
-    // Write ports
-    .waddr_i            ( rf_waddr    ),
-    .wdata_i            ( rf_wdata    ),
-    .we_i               ( rf_we       )
-  );
+  // Map Out signal for data 
+  assign data_req_o=data_mem_req[Out]; 
+  //assign host_gnt=data_mem_req[Out];
+  assign data_mem_rvalid[Out]=data_rvalid_i;
+  assign data_addr_o=data_mem_addr[Out];
+  assign data_be_o=data_mem_be[Out];
+  assign data_we_o=data_mem_we[Out];
+  assign data_wdata_o = data_mem_wdata[Out];
+  assign data_mem_rdata[Out]=data_rdata_i;
+  assign data_mem_err[Out]=data_err_i;
+  // Pending 
+  //.data_memtype_o (),
+  //.data_prot_o (),
+  //.data_dbg_o (),
 
 endmodule

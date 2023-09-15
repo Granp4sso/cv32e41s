@@ -190,6 +190,75 @@ typedef enum logic [1:0] {MUL_ALBL, MUL_ALBH, MUL_AHBL, MUL_AHBH} mul_state_e;
 typedef enum logic [1:0] {DIV_IDLE, DIV_DIVIDE, DIV_DUMMY, DIV_FINISH} div_state_e;
 
 
+////////////////////////////////////////////////////////////////////////
+//       __  ___                 _          _     ___          ___    //
+//    ___\ \/ / |_ ___ _ __   __| | ___  __| |   / _ \/\/\    / _ \   //
+//   / _ \\  /| __/ _ \ '_ \ / _` |/ _ \/ _` |  / /_)/    \  / /_)/   //
+//  |  __//  \| ||  __/ | | | (_| |  __/ (_| | / ___/ /\/\ \/ ___/    //
+//   \___/_/\_\\__\___|_| |_|\__,_|\___|\__,_| \/   \/    \/\/        //
+//                                                                    //
+////////////////////////////////////////////////////////////////////////
+
+  //////////////////////////
+  //  Memory Relocation   //
+  //////////////////////////
+
+  parameter CSR_PMRADDROFF_MASK = 32'hFFFFFFFF;
+  parameter PMR_OFFSET_SIZE = 32;
+
+  typedef enum logic {
+    PMR_NONE      = 1'b0,
+    PMR_SUPPORT   = 1'b1
+  } xpmp_pmr_e;
+
+  typedef enum logic [1:0] {
+    PMR_ENC_LIN   = 2'b00,
+    PMR_ENC_POT   = 2'b01,
+    PMR_ENC_MIX   = 2'b10
+  } xpmp_pmr_enc_e;
+
+  //////////////////////////
+  //  XPMP Configuration  //
+  //////////////////////////
+
+  typedef enum logic {
+    PMP_TRIE_NONE      = 1'b0,
+    PMP_TRIE_SUPPORT   = 1'b1
+  } xpmp_trie_e;
+
+  typedef enum logic [1:0] {
+    PMP_TRIE_NOTCPM      = 2'b00,
+    PMP_TRIE_SEGCMP      = 2'b01,
+    PMP_TRIE_LIMCMP      = 2'b10,
+    PMP_TRIE_ALLCMP      = 2'b11
+  } xpmp_trie_cmp_e;
+    
+  typedef struct packed {
+    xpmp_pmr_enc_e    pmr_encoding;
+    xpmp_pmr_e        pmr_support;
+    xpmp_trie_cmp_e   trie_compression; 
+    xpmp_trie_e       trie_support;
+    logic             trie_en;
+  } xpmpcfg_t;
+
+  // Valued written into xpmpcfg. They must be coherent with components parameters
+  parameter xpmp_trie_e       GLOBAL_XPMP_TRIE      = PMP_TRIE_SUPPORT;
+  parameter xpmp_trie_cmp_e   GLOBAL_XPMP_TRIE_CMP  = PMP_TRIE_NOTCPM;
+  parameter xpmp_pmr_e        GLOBAL_XPMP_PMR       = PMR_SUPPORT;
+  parameter xpmp_pmr_enc_e    GLOBAL_XPMP_PMR_ENC   = PMR_ENC_LIN;
+
+  parameter CSR_XPMPCFG_MASK     = 8'hFF;
+  parameter xpmpcfg_t XPMPCFG_DEFAULT= '{
+                                      pmr_encoding      : GLOBAL_XPMP_PMR_ENC,          
+                                      pmr_support       : GLOBAL_XPMP_PMR,
+                                      trie_compression  : GLOBAL_XPMP_TRIE_CMP,
+                                      trie_support      : GLOBAL_XPMP_TRIE,
+                                      trie_en           : 1'b0
+                                      };
+
+  // More xPMp definitions are into the CSR memory map and PMP csr struct
+
+
 /////////////////////////////////////////////////////////
 //    ____ ____    ____            _     _             //
 //   / ___/ ___|  |  _ \ ___  __ _(_)___| |_ ___ _ __  //
@@ -214,6 +283,24 @@ typedef enum logic[11:0] {
 
   // None
 
+  ///////////////////////////////////////////////////////
+  // Supervisor CSRs
+  ///////////////////////////////////////////////////////
+
+  CSR_SSTATUS       = 12'h100,
+  CSR_SIE           = 12'h104,
+  CSR_STVEC         = 12'h105,
+  CSR_SCOUNTEREN    = 12'h106,
+  CSR_SENVCFG       = 12'h10A,
+  CSR_SSCRATCH      = 12'h140,
+  CSR_SEPC          = 12'h141,
+  CSR_SCAUSE        = 12'h142,
+  CSR_STVAL         = 12'h143,
+  CSR_SIP           = 12'h144,
+  CSR_SATP          = 12'h180,
+
+  // Debug
+  CSR_SCONTEXT      = 12'h5A8,
 
   ///////////////////////////////////////////////////////
   // Machine CSRs
@@ -222,6 +309,8 @@ typedef enum logic[11:0] {
   // Machine trap setup
   CSR_MSTATUS        = 12'h300,
   CSR_MISA           = 12'h301,
+  CSR_MEDELEG        = 12'h302,
+  CSR_MIDELEG        = 12'h303,
   CSR_MIE            = 12'h304,
   CSR_MTVEC          = 12'h305,
   CSR_MCOUNTEREN     = 12'h306,
@@ -364,6 +453,73 @@ typedef enum logic[11:0] {
   CSR_PMPADDR62      = 12'h3EE,
   CSR_PMPADDR63      = 12'h3EF,
 
+  // Custom Extension: PMR registers
+  CSR_PMRADDROFF0    = 12'hBC0,
+  CSR_PMRADDROFF1    = 12'hBC1,
+  CSR_PMRADDROFF2    = 12'hBC2,
+  CSR_PMRADDROFF3    = 12'hBC3,
+  CSR_PMRADDROFF4    = 12'hBC4,
+  CSR_PMRADDROFF5    = 12'hBC5,
+  CSR_PMRADDROFF6    = 12'hBC6,
+  CSR_PMRADDROFF7    = 12'hBC7,
+  CSR_PMRADDROFF8    = 12'hBC8,
+  CSR_PMRADDROFF9    = 12'hBC9,
+  CSR_PMRADDROFF10   = 12'hBCA,
+  CSR_PMRADDROFF11   = 12'hBCB,
+  CSR_PMRADDROFF12   = 12'hBCC,
+  CSR_PMRADDROFF13   = 12'hBCE,
+  CSR_PMRADDROFF14   = 12'hBCD,
+  CSR_PMRADDROFF15   = 12'hBCF,
+  CSR_PMRADDROFF16   = 12'hBD0,
+  CSR_PMRADDROFF17   = 12'hBD1,
+  CSR_PMRADDROFF18   = 12'hBD2,
+  CSR_PMRADDROFF19   = 12'hBD3,
+  CSR_PMRADDROFF20   = 12'hBD4,
+  CSR_PMRADDROFF21   = 12'hBD5,
+  CSR_PMRADDROFF22   = 12'hBD6,
+  CSR_PMRADDROFF23   = 12'hBD7,
+  CSR_PMRADDROFF24   = 12'hBD8,
+  CSR_PMRADDROFF25   = 12'hBD9,
+  CSR_PMRADDROFF26   = 12'hBDA,
+  CSR_PMRADDROFF27   = 12'hBDB,
+  CSR_PMRADDROFF28   = 12'hBDC,
+  CSR_PMRADDROFF29   = 12'hBDD,
+  CSR_PMRADDROFF30   = 12'hBDE,
+  CSR_PMRADDROFF31   = 12'hBDF,
+  CSR_PMRADDROFF32   = 12'hBE0,
+  CSR_PMRADDROFF33   = 12'hBE1,
+  CSR_PMRADDROFF34   = 12'hBE2,
+  CSR_PMRADDROFF35   = 12'hBE3,
+  CSR_PMRADDROFF36   = 12'hBE4,
+  CSR_PMRADDROFF37   = 12'hBE5,
+  CSR_PMRADDROFF38   = 12'hBE6,
+  CSR_PMRADDROFF39   = 12'hBE7,
+  CSR_PMRADDROFF40   = 12'hBE8,
+  CSR_PMRADDROFF41   = 12'hBE9,
+  CSR_PMRADDROFF42   = 12'hBEA,
+  CSR_PMRADDROFF43   = 12'hBEB,
+  CSR_PMRADDROFF44   = 12'hBEC,
+  CSR_PMRADDROFF45   = 12'hBED,
+  CSR_PMRADDROFF46   = 12'hBEE,
+  CSR_PMRADDROFF47   = 12'hBEF,
+  CSR_PMRADDROFF48   = 12'hBF1,
+  CSR_PMRADDROFF49   = 12'hBF2,
+  CSR_PMRADDROFF50   = 12'hBF3,
+  CSR_PMRADDROFF51   = 12'hBF4,
+  CSR_PMRADDROFF52   = 12'hBF5,
+  CSR_PMRADDROFF53   = 12'hBF6,
+  CSR_PMRADDROFF54   = 12'hBF7,
+  CSR_PMRADDROFF55   = 12'hBF8,
+  CSR_PMRADDROFF56   = 12'hBFB,
+  CSR_PMRADDROFF57   = 12'hBFD,
+  CSR_PMRADDROFF58   = 12'hBFE,
+  CSR_PMRADDROFF59   = 12'hBFF,
+  CSR_PMRADDROFF60   = 12'h7C0,
+  CSR_PMRADDROFF61   = 12'h7C1,
+  CSR_PMRADDROFF62   = 12'h7C2,
+  CSR_PMRADDROFF63   = 12'h7C3,
+  CSR_XPMPCFG    		 = 12'h7C4,
+
   // Machine configuration
   CSR_MENVCFG        = 12'h30A,
   CSR_MENVCFGH       = 12'h31A,
@@ -466,8 +622,10 @@ typedef enum logic[11:0] {
 
 } csr_num_e;
 
-// CSR Bit Implementation Masks
-// A mask bit of '1' means a flipflop is implemented.
+
+// A mask bit of '1' means a flipflop is implemented into cv32e31s_csr modules
+// Machine mode CSR Bit Implementation Masks
+
 parameter CSR_JVT_MASK          = 32'hFFFFFFC0;
 parameter CSR_DCSR_MASK         = 32'b0000_0000_0000_0000_1001_1101_1100_0111; // NMI bit taken from ctrl_fsm
 parameter CSR_MEPC_MASK         = 32'hFFFFFFFE;
@@ -490,6 +648,52 @@ parameter CSR_BASIC_MCAUSE_MASK = 32'b1000_0000_0000_0000_0000_0111_1111_1111;
 parameter CSR_CLIC_MTVEC_MASK   = 32'hFFFFFF80;
 parameter CSR_BASIC_MTVEC_MASK  = 32'hFFFFFF81;
 
+// Supervisor mode CSR Bit Implementation Masks & Reset values
+
+parameter CSR_SSTATUS_MASK    = 32'hFFFFFFFF;       // Generic CSR atm
+parameter CSR_SIE_MASK        = 32'hFFFFFFFF;       // Generic CSR atm
+parameter CSR_STVEC_MASK      = 32'hFFFFFFFF;       // Generic CSR atm
+parameter CSR_SCOUNTEREN_MASK = 32'hFFFFFFFF;       // Generic CSR atm
+parameter CSR_SENVCFG_MASK    = 32'hFFFFFFFF;       // Generic CSR atm
+parameter CSR_SSCRATCH_MASK   = 32'hFFFFFFFF;       // Generic CSR atm
+parameter CSR_SEPC_MASK         = 32'hFFFFFFFE;
+parameter CSR_BASIC_SCAUSE_MASK = 32'b1000_0000_0000_0000_0000_0111_1111_1111;
+parameter CSR_STVAL_MASK      = 32'hFFFFFFFF;       // Generic CSR atm
+parameter CSR_SIP_MASK        = 32'hFFFFFFFF;       // Generic CSR atm
+parameter CSR_SATP_MASK       = 32'hFFFFFFFF;       // Generic CSR atm
+parameter CSR_SCONTEXT_MASK   = 32'hFFFFFFFF;       // Generic CSR atm
+
+// mideleg & medeleg are machine mode CSRs, but they only exists if S-mode is supported
+
+parameter CSR_MEDELEG_MASK    = 32'h0000FFFF;   
+parameter CSR_MIDELEG_MASK    = 32'hFFFF0222;   // Only Supervisor interrupt can be delegated       
+
+
+
+
+
+// Supervisor mode relayed types and enum
+
+typedef struct packed {
+  logic [31:16] zero2;
+  logic         store_page_fault;
+  logic         zero1;
+  logic         load_page_fault;
+  logic         instr_page_fault;
+  logic         mcall;
+  logic         zero0;
+  logic         scall;
+  logic         ucall;
+  logic         store_access_fault;
+  logic         store_addr_misaligned;
+  logic         load_access_fault;
+  logic         load_addr_misaligned;
+  logic         breakpoint;
+  logic         instr_illegal;
+  logic         instr_access_fault;
+  logic         instr_addr_misaligned;
+} medeleg_t;
+
 
 // CSR operations
 
@@ -507,6 +711,9 @@ typedef enum logic [CSR_OP_WIDTH-1:0]
 parameter int unsigned CSR_MSIX_BIT      = 3;
 parameter int unsigned CSR_MTIX_BIT      = 7;
 parameter int unsigned CSR_MEIX_BIT      = 11;
+parameter int unsigned CSR_SSIX_BIT      = 3;
+parameter int unsigned CSR_STIX_BIT      = 7;
+parameter int unsigned CSR_SEIX_BIT      = 11;
 parameter int unsigned CSR_MFIX_BIT_LOW  = 16;
 parameter int unsigned CSR_MFIX_BIT_HIGH = 31;
 
@@ -547,7 +754,7 @@ typedef enum logic[1:0] {
 
 parameter privlvl_t PRIV_LVL_LOWEST = PRIV_LVL_U;
 
-// Struct used for setting privilege lelve
+// Struct used for setting privilege level
 typedef struct packed {
   logic        priv_lvl_set;
   privlvl_t    priv_lvl;
@@ -586,11 +793,19 @@ parameter DCSR_EBREAKU_BIT     = 12;
 parameter DCSR_PRV_BIT_HIGH    = 1;
 parameter DCSR_PRV_BIT_LOW     = 0;
 
+// Machine Interrupt Enable/Pending bits
+parameter MIE_SSIE = 1;
+parameter MIE_MSIE = 3;
+parameter MIE_STIE = 5;
+parameter MIE_MTIE = 7;
+parameter MIE_MEIE = 9;
+parameter MIE_SEIE = 11;
+
 
 // misa
 parameter logic [1:0] MXL = 2'd1; // M-XLEN: XLEN in M-Mode for RV32
 
-// Types for packed struct CSRs
+// Types for packed struct MCSRs
 
 typedef struct packed {
   logic [31:6] base;
@@ -612,14 +827,14 @@ typedef struct packed {
   logic [14:13] fs;     // FPU extension context status
   logic [12:11] mpp;
   logic [10:9]  vs;     // Vector extension context status
-  logic         spp;    // Hardwired zero
+  logic         spp;    
   logic         mpie;
   logic         ube;    // Hardwired zero
-  logic         spie;   // Hardwired zero
+  logic         spie;   
   logic         zero2;  // Reserved, hardwired to zero.
   logic         mie;
   logic         zero1;  // Reserved, hardwired to zero.
-  logic         sie;    // Hardwired to zero
+  logic         sie;    
   logic         zero0;  // Reserved, hardwired zero
 } mstatus_t;
 
@@ -702,6 +917,40 @@ typedef struct packed {
   logic [15: 8] sil;
   logic [ 7: 0] uil;
 } mintstatus_t;
+
+// Types for packed struct SCSRs
+
+typedef struct packed {
+  logic         sd;     // State dirty
+  logic [30:20] zero5;  // Hardwired zero
+  logic         mxr;    // Hardwired zero
+  logic         sum;    // Hardwired zero
+  logic         zero4;  
+  logic [16:15] xs;     // Other extension context
+  logic [14:13] fs;     // FPU extension context status
+  logic [12:11] zero3;  // Masks MPP bits from mstatus
+  logic [10:9]  vs;     // Vector extension context status
+  logic         spp;    
+  logic         zero2;  // Masks MPIE bit from mstatus
+  logic         ube;    // Hardwired zero
+  logic         spie;   
+  logic [4:2]   zero1;  // Masks MIE bit from mstatus + hardwired zeroes
+  logic         sie;    
+  logic         zero0;  // Reserved, hardwired zero
+} sstatus_t;
+
+// CLIC is not supported for Supervisor Mode ATM
+typedef struct packed {
+  logic           irq;
+  logic [30: 0]   exception_code;  // Exception cause
+} scause_t;
+
+typedef struct packed {
+  logic [31:7] addr;
+  logic        zero0;
+  logic [ 5:2] submode;
+  logic [ 1:0] mode;
+} stvec_t;
 
 
 parameter dcsr_t DCSR_RESET_VAL = '{
@@ -803,6 +1052,25 @@ parameter logic [31:0] TDATA1_RST_VAL = {
   parameter TDATA1_TTYPE_HIGH = 31;
   parameter TDATA1_TTYPE_LOW  = 28;
 
+  // Supervisor Mode Parameters
+
+  parameter STVEC_MODE_BIT_HIGH  = 1;
+  parameter STVEC_MODE_BIT_LOW   = 0;
+
+  parameter logic [31:0] SSTATUS_RESET_VAL =    '0;
+  parameter scause_t     SCAUSE_BASIC_RESET_VAL = '0;
+  parameter logic [31:0] STVEC_RESET_VAL =      '0;
+  parameter logic [31:0] SIE_RESET_VAL =        '0;
+  parameter logic [31:0] SCOUNTEREN_RESET_VAL = '0;
+  parameter logic [31:0] SENVCFG_RESET_VAL =    '0;
+  parameter logic [31:0] SSCRATCH_RESET_VAL =   '0;
+  parameter logic [31:0] SEPC_RESET_VAL =       '0;
+  parameter logic [31:0] STVAL_RESET_VAL =      '0;
+  parameter logic [31:0] SIP_RESET_VAL =        '0;
+  parameter logic [31:0] SATP_RESET_VAL =       '0;
+  parameter logic [31:0] SCONTEXT_RESET_VAL =   '0;
+  parameter logic [31:0] MEDELEG_RESET_VAL =    '0;
+  parameter logic [31:0] MIDELEG_RESET_VAL =    '0;
 
 ///////////////////////////////////////////////
 //   ___ ____    ____  _                     //
@@ -1005,6 +1273,7 @@ parameter EXC_CAUSE_BREAKPOINT            = 11'h03;
 parameter EXC_CAUSE_LOAD_FAULT            = 11'h05;
 parameter EXC_CAUSE_STORE_FAULT           = 11'h07;
 parameter EXC_CAUSE_ECALL_UMODE           = 11'h08;
+parameter EXC_CAUSE_ECALL_SMODE           = 11'h09;
 parameter EXC_CAUSE_ECALL_MMODE           = 11'h0B;
 parameter EXC_CAUSE_INSTR_INTEGRITY_FAULT = 11'h19;
 parameter EXC_CAUSE_INSTR_BUS_FAULT       = 11'h18;
@@ -1018,7 +1287,8 @@ parameter INT_CAUSE_LSU_LOAD_INTEGRITY_FAULT  = 11'h402;
 parameter INT_CAUSE_LSU_STORE_INTEGRITY_FAULT = 11'h403;
 
 // Interrupt mask
-parameter IRQ_MASK = 32'hFFFF0888;
+parameter IRQ_MASK = 32'hFFFF0AAA;
+parameter SIX_MASK = 32'h00000222;
 
 // NMI offset
 parameter NMI_MTVEC_INDEX = 5'd15;
@@ -1129,9 +1399,15 @@ parameter mseccfg_t MSECCFG_DEFAULT = '{zero0 : 29'h0,
 
 // Struct containing all PMP related CSR's
 typedef struct packed {
+
   pmpncfg_t [PMP_MAX_REGIONS-1:0]   cfg;
   logic [PMP_MAX_REGIONS-1:0][33:0] addr;
   mseccfg_t                         mseccfg;
+
+  // Extended PMP custom signals
+  xpmpcfg_t                                         xpmpcfg;
+  logic [PMP_MAX_REGIONS-1:0][PMR_OFFSET_SIZE-1:0]  pmraddroff;   
+
 } pmp_csr_t;
 
 
@@ -1445,6 +1721,9 @@ typedef struct packed {
                                       // Setting to 11 bits (max), unused bits will be tied off
   logic [4:0]  nmi_mtvec_index;       // Offset into mtvec when taking an NMI
 
+  logic [4:0]  stvec_pc_mux;          // Id of taken basic mode irq (to IF, EXC_PC_MUX, zeroed if stvec_mode==0)
+  logic [4:0]  nmi_stvec_index;       // Offset into stvec when taking an NMI
+
 
   logic        irq_ack;               // Irq has been taken
   logic [9:0]  irq_id;                // Id of taken irq. Max width (1024 interrupts), unused bits will be tied off
@@ -1609,7 +1888,7 @@ typedef struct packed {
     return next_value;
   endfunction
 
-  function automatic logic[1:0] mtvec_mode_clint_resolve
+  function automatic logic[1:0] xtvec_mode_clint_resolve
   (
     logic [1:0] current_value,
     logic [1:0] next_value
@@ -1854,5 +2133,24 @@ typedef struct packed {
       cv32e41s_pkg::obi_data_resp_t            resp_payload;
 
   } cv32e41s_if_c_obi_data_monitor_i;
+
+  //////////////////////////////////////////////
+  //    _____       _         ___             // 
+  //    \_   \_ __ | |_      / __\_   _ ___   //
+  //     / /\/ '_ \| __|    /__\// | | / __|  //
+  //  /\/ /_ | | | | |_ _  / \/  \ |_| \__ \  //  
+  //  \____/ |_| |_|\__(_) \_____/\__,_|___/  //
+  //                                          //
+  //////////////////////////////////////////////
+  
+  typedef enum int {
+    Out = 0, // It is important that Out is in position 0 in order to be the default selected memory from the bus
+    TcmInst = 1,
+    TcmData = 2,
+    RpmMem = 3
+  } internal_bus_dev_e;
+
+
+
 
 endpackage

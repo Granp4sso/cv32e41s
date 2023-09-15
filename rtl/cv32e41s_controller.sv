@@ -211,6 +211,7 @@ module cv32e41s_controller import cv32e41s_pkg::*;
     .wu_wfe_i                    ( wu_wfe_i                 ),
 
     .mtvec_mode_i                ( mtvec_mode_i             ),
+    .stvec_mode_i                ( '0             ),
 
     .etrigger_wb_i               ( etrigger_wb_i            ),
 
@@ -226,9 +227,6 @@ module cv32e41s_controller import cv32e41s_pkg::*;
     .fencei_flush_req_o          ( fencei_flush_req_o       ),
 
     .lsu_busy_i                  ( lsu_busy_i               ),
-
-    // Data OBI interface monitor       // UNUSED
-    //.c_obi_data_if_mo_i          ( c_obi_data_if_mo_i     ),
 
     // Outputs
     .ctrl_fsm_o                  ( ctrl_fsm_o               )

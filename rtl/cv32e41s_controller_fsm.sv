@@ -20,6 +20,7 @@
 // Engineer:       Øystein Knauserud - oystein.knauserud@silabs.com           //
 //                                                                            //
 // Additional contributions by:                                               //
+//                 Stefano Mercogliano - stefano.mercogliano@unina.it         //
 //                                                                            //
 // Design Name:    cv32e41s_controller_fsm                                    //
 // Project Name:   CV32E41S                                                   //
@@ -96,6 +97,7 @@ module cv32e41s_controller_fsm import cv32e41s_pkg::*;
 
   // From cs_registers
   input  logic  [1:0] mtvec_mode_i,
+  input  logic  [1:0] stvec_mode_i,
   input  dcsr_t       dcsr_i,
   input  mcause_t     mcause_i,
   input  xsecure_ctrl_t xsecure_ctrl_i,
@@ -274,6 +276,7 @@ module cv32e41s_controller_fsm import cv32e41s_pkg::*;
   // Mux selector for vectored IRQ PC
   // Used for both basic mode and CLIC when shv == 0.
   assign ctrl_fsm_o.mtvec_pc_mux = ((mtvec_mode_i == 2'b0) || ((mtvec_mode_i == 2'b11) && !irq_clic_shv_i)) ? 5'h0 : exc_cause[4:0];
+  assign ctrl_fsm_o.stvec_pc_mux = ((stvec_mode_i == 2'b0) || ((stvec_mode_i == 2'b11) && !irq_clic_shv_i)) ? 5'h0 : exc_cause[4:0]; // @#@
 
   // CLIC mode vectored PC mux is always the same as exc_cause.
   assign ctrl_fsm_o.mtvt_pc_mux = exc_cause[9:0];
@@ -281,6 +284,8 @@ module cv32e41s_controller_fsm import cv32e41s_pkg::*;
   // Set which mtvec index to jump to when an NMI is taken
   // index 0 for non-vectored CLINT mode and CLIC mode, 0xF for vectored CLINT mode
   assign ctrl_fsm_o.nmi_mtvec_index = (mtvec_mode_i == 2'b01) ? 5'hF : 5'h0;
+  //assign ctrl_fsm_o.nmi_stvec_index = (stvec_mode_i == 2'b01) ? 5'hF : 5'h0; 
+  // @#@ ERROR: FOR SOME REASONS THIS LINE GENERATE AN EXCEPTION WITH CAUSE 19, IDK WHY.
 
 
 
@@ -385,9 +390,11 @@ assign ctrl_fsm_o.exception_in_wb = exception_in_wb;
                                ex_wb_pipe_i.instr.bus_resp.integrity_err                                                     ? EXC_CAUSE_INSTR_INTEGRITY_FAULT :
                               ex_wb_pipe_i.instr.bus_resp.err                                                                ? EXC_CAUSE_INSTR_BUS_FAULT :
                               ex_wb_pipe_i.illegal_insn                                                                      ? EXC_CAUSE_ILLEGAL_INSN    :
-                              (ex_wb_pipe_i.sys_en && ex_wb_pipe_i.sys_ecall_insn)                                           ? (priv_lvl_i==PRIV_LVL_M ?
+                              /*(ex_wb_pipe_i.sys_en && ex_wb_pipe_i.sys_ecall_insn)                                           ? (priv_lvl_i==PRIV_LVL_M ?
                                                                                                                                 EXC_CAUSE_ECALL_MMODE :
-                                                                                                                                EXC_CAUSE_ECALL_UMODE )  :
+                                                                                                                                EXC_CAUSE_ECALL_UMODE )  :*/
+                              (ex_wb_pipe_i.sys_en && ex_wb_pipe_i.sys_ecall_insn)                                            ? {9'0, priv_lvl_i} + 
+                                                                                                                                EXC_CAUSE_ECALL_UMODE : // @#@                                                                                        
                               (ex_wb_pipe_i.sys_en && ex_wb_pipe_i.sys_ebrk_insn && (ex_wb_pipe_i.priv_lvl == PRIV_LVL_M) &&
                                 !dcsr_i.ebreakm && !debug_mode_q)                                                            ? EXC_CAUSE_BREAKPOINT      :
                               (ex_wb_pipe_i.sys_en && ex_wb_pipe_i.sys_ebrk_insn && (ex_wb_pipe_i.priv_lvl == PRIV_LVL_U) &&
@@ -634,6 +641,9 @@ assign ctrl_fsm_o.exception_in_wb = exception_in_wb;
     endcase
   end
 
+  pc_mux_e dummy;
+
+  assign dummy = ctrl_fsm_o.pc_mux;
   //////////////
   // FSM comb //
   //////////////

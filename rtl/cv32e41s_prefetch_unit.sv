@@ -58,8 +58,10 @@ module cv32e41s_prefetch_unit import cv32e41s_pkg::*;
   input  logic        resp_valid_i,
   input  inst_resp_t  resp_i,
 
-  output logic                       one_txn_pend_n,
-  output logic [ALBUF_CNT_WIDTH-1:0] outstnd_cnt_q_o,
+  output logic                        one_txn_pend_n,
+  output logic [ALBUF_CNT_WIDTH-1:0]  outstnd_cnt_q_o,
+  input  logic                        mpu_if_trie_fault_i,
+  input  logic                        mpu_lsu_trie_fault_i,
 
   // Xsecure control (for parity and rchk)
   input xsecure_ctrl_t  xsecure_ctrl_i,
@@ -141,6 +143,8 @@ module cv32e41s_prefetch_unit import cv32e41s_pkg::*;
     .resp_i                ( resp_i                  ),
     .one_txn_pend_n        ( one_txn_pend_n          ),
     .outstnd_cnt_q_o       ( outstnd_cnt_q_o         ),
+    .mpu_if_trie_fault_i   ( mpu_if_trie_fault_i     ),
+    .mpu_lsu_trie_fault_i  ( mpu_lsu_trie_fault_i    ),
 
     // Instruction interface
     .instr_valid_o         ( prefetch_valid_o        ),

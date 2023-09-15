@@ -33,7 +33,12 @@ module cv32e41s_load_store_unit import cv32e41s_pkg::*;
   parameter int          DBG_NUM_TRIGGERS = 1,
   parameter bit          DEBUG = 1,
   parameter logic [31:0] DM_REGION_START = 32'hF0000000,
-  parameter logic [31:0] DM_REGION_END   = 32'hF0003FFF
+  parameter logic [31:0] DM_REGION_END   = 32'hF0003FFF,
+  // Custom XPMP extension
+  parameter xpmp_pmr_e                  XPMP_PMR_ENABLE   = PMR_NONE,
+  parameter xpmp_pmr_enc_e              XPMP_PMR_ENCODING = PMR_ENC_LIN,
+  parameter xpmp_trie_e                 XPMP_TRIE         = PMP_TRIE_NONE,
+  parameter xpmp_trie_cmp_e             XPMP_TRIE_CMP     = PMP_TRIE_NOTCPM
 )
 (
   input  logic        clk,
@@ -75,6 +80,13 @@ module cv32e41s_load_store_unit import cv32e41s_pkg::*;
   // PMP CSR's
   input               pmp_csr_t csr_pmp_i,
 
+  // RPM implicit accesses
+  output logic			       							pmp_lsu_req_o, 
+  output logic [31:0]			 							pmp_lsu_addr_o,
+  input  logic        									pmp_lsu_rvalid_i,
+  input  logic [31:0] 									pmp_lsu_rdata_b0_i,
+  input  logic [31:0] 									pmp_lsu_rdata_b1_i,
+
   // Privilege mode
   input              privlvl_t priv_lvl_lsu_i,
 
@@ -88,6 +100,8 @@ module cv32e41s_load_store_unit import cv32e41s_pkg::*;
   output logic        ready_1_o,                // LSU ready for new data in WB stage
   output logic        valid_1_o,
   input  logic        ready_1_i,
+
+  output logic        mpu_lsu_trie_fault_o,
 
   // Integrity and protocol error flags
   output logic        integrity_err_o,
@@ -190,8 +204,10 @@ module cv32e41s_load_store_unit import cv32e41s_pkg::*;
   logic           integrity_err_obi;    // OBI interface integrity error
   logic           protocol_err_obi;    // OBI interface protocol error
 
+
   // Transaction (before aligner)
   // Generate address from operands (atomic memory transactions do not use an address offset computation)
+
   always_comb begin
     trans.addr  = (id_ex_pipe_i.alu_operand_a + id_ex_pipe_i.alu_operand_b);
     trans.we    = id_ex_pipe_i.lsu_we;
@@ -202,6 +218,9 @@ module cv32e41s_load_store_unit import cv32e41s_pkg::*;
 
     trans.sext  = id_ex_pipe_i.lsu_sext;
   end
+
+    logic [31:0]  test = id_ex_pipe_i.alu_operand_a;
+    logic [31:0]  test1 = id_ex_pipe_i.alu_operand_b;
 
   // Set outputs for trigger module
   assign lsu_addr_o = wpt_trans.addr;
@@ -519,7 +538,7 @@ module cv32e41s_load_store_unit import cv32e41s_pkg::*;
         next_cnt = cnt_q;
       end
       2'b01 : begin
-        next_cnt = cnt_q - 1'b1;
+        next_cnt = (cnt_q == 0) ? cnt_q : cnt_q - 1'b1;
       end
       2'b10 : begin
         next_cnt = cnt_q + 1'b1;
@@ -543,7 +562,10 @@ module cv32e41s_load_store_unit import cv32e41s_pkg::*;
     if (rst_n == 1'b0) begin
       cnt_q <= '0;
     end else begin
-      cnt_q <= next_cnt;
+      // If the PMP trie is enabled and a fault occurs, reset the counter
+      // This is necessary because the PMP trie will output a valid signal
+      // only after the RPM walk
+      cnt_q <= (mpu_trie_fault) ? 0 : next_cnt;
     end
   end
 
@@ -673,7 +695,8 @@ module cv32e41s_load_store_unit import cv32e41s_pkg::*;
   // MPU
   //////////////////////////////////////////////////////////////////////////////
 
-  cv32e41s_mpu
+  logic mpu_trie_fault;
+  cv32e41s_mpu_test
   #(
     .IF_STAGE           ( 0                    ),
     .CORE_RESP_TYPE     ( data_resp_t          ),
@@ -685,7 +708,12 @@ module cv32e41s_load_store_unit import cv32e41s_pkg::*;
     .PMP_NUM_REGIONS    ( PMP_NUM_REGIONS      ),
     .DEBUG              ( DEBUG                ),
     .DM_REGION_START    ( DM_REGION_START      ),
-    .DM_REGION_END      ( DM_REGION_END        )
+    .DM_REGION_END      ( DM_REGION_END        ),
+
+    .XPMP_PMR_ENABLE      ( XPMP_PMR_ENABLE         ),              
+    .XPMP_PMR_ENCODING    ( XPMP_PMR_ENCODING       ),   
+    .XPMP_TRIE            ( XPMP_TRIE               ),   
+    .XPMP_TRIE_CMP        ( XPMP_TRIE_CMP           ) 
   )
   mpu_i
   (
@@ -696,13 +724,19 @@ module cv32e41s_load_store_unit import cv32e41s_pkg::*;
 
     .core_one_txn_pend_n  ( cnt_is_one_next    ),
     .core_mpu_err_wait_i  ( 1'b1               ),
-    .core_mpu_err_o       (                    ),
+    .core_mpu_err_o       ( mpu_trie_fault     ),
     .core_trans_valid_i   ( mpu_trans_valid    ),
     .core_trans_pushpop_i ( mpu_trans_pushpop  ),
     .core_trans_ready_o   ( mpu_trans_ready    ),
     .core_trans_i         ( mpu_trans          ),
     .core_resp_valid_o    ( mpu_resp_valid     ),
     .core_resp_o          ( mpu_resp           ),
+
+    .pmp_imp_req_o        ( pmp_lsu_req_o                       ), 
+    .pmp_imp_addr_o       ( pmp_lsu_addr_o                      ),
+    .pmp_imp_rvalid_i     ( pmp_lsu_rvalid_i                    ),
+    .pmp_imp_rdata_b0_i   ( pmp_lsu_rdata_b0_i                    ),
+    .pmp_imp_rdata_b1_i   ( pmp_lsu_rdata_b1_i                    ),
 
     .bus_trans_valid_o    ( filter_trans_valid ),
     .bus_trans_ready_i    ( filter_trans_ready ),
@@ -797,6 +831,9 @@ module cv32e41s_load_store_unit import cv32e41s_pkg::*;
     .c_obi_data_if_ma_i ( c_obi_data_if_ma_i  ),
     .c_obi_data_if_ma_o ( c_obi_data_if_ma_o  )
   );
+
+  // PMP trie fault signal to id stage
+  assign mpu_lsu_trie_fault_o = mpu_trie_fault;
 
   // Set error bits (fans into alert_major)
   assign integrity_err_o = integrity_err_obi;

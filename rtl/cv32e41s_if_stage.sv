@@ -42,7 +42,13 @@ module cv32e41s_if_stage import cv32e41s_pkg::*;
   parameter m_ext_e      M_EXT           = M_NONE,
   parameter bit          DEBUG           = 1,
   parameter logic [31:0] DM_REGION_START = 32'hF0000000,
-  parameter logic [31:0] DM_REGION_END   = 32'hF0003FFF
+  parameter logic [31:0] DM_REGION_END   = 32'hF0003FFF,
+
+  // Custom XPMP extension
+  parameter xpmp_pmr_e                  XPMP_PMR_ENABLE   = PMR_NONE,
+  parameter xpmp_pmr_enc_e              XPMP_PMR_ENCODING = PMR_ENC_LIN,
+  parameter xpmp_trie_e                 XPMP_TRIE         = PMP_TRIE_NONE,
+  parameter xpmp_trie_cmp_e             XPMP_TRIE_CMP     = PMP_TRIE_NOTCPM
 )
 (
   input  logic          clk,
@@ -72,6 +78,15 @@ module cv32e41s_if_stage import cv32e41s_pkg::*;
   // Instruction bus interface
   input   cv32e41s_if_c_obi_instr_master_i  c_obi_instr_if_ma_i,
   output  cv32e41s_if_c_obi_instr_master_o  c_obi_instr_if_ma_o,
+
+  // RPM implicit accesses
+  output logic			       							pmp_if_req_o, 
+  output logic [31:0]			 							pmp_if_addr_o,
+  input  logic        									pmp_if_rvalid_i,
+  input  logic [31:0] 									pmp_if_rdata_b0_i,
+  input  logic [31:0] 									pmp_if_rdata_b1_i,
+  input  logic                          mpu_lsu_trie_fault_i,
+
 
   output if_id_pipe_t   if_id_pipe_o,           // IF/ID pipeline stage
   output logic [31:0]   pc_if_o,                // Program counter
@@ -260,6 +275,8 @@ module cv32e41s_if_stage import cv32e41s_pkg::*;
     .prefetch_busy_o          ( prefetch_busy               ),
     .one_txn_pend_n           ( prefetch_one_txn_pend_n     ),
     .outstnd_cnt_q_o          ( prefetch_outstnd_cnt_q      ),
+    .mpu_if_trie_fault_i      ( mpu_if_trie_fault              ), // If an MPU trie fault occurs, reset the cnt
+    .mpu_lsu_trie_fault_i     ( mpu_lsu_trie_fault_i        ),
 
     .protocol_err_o           ( prefetch_protocol_err       )
   );
@@ -267,6 +284,8 @@ module cv32e41s_if_stage import cv32e41s_pkg::*;
   //////////////////////////////////////////////////////////////////////////////
   // MPU
   //////////////////////////////////////////////////////////////////////////////
+
+  logic mpu_if_trie_fault;
 
   // TODO: The prot bits are currently not checked for correctness anywhere
   assign core_trans.addr      = prefetch_trans_addr;
@@ -277,7 +296,7 @@ module cv32e41s_if_stage import cv32e41s_pkg::*;
   assign core_trans.achk      = 13'b0;                       // Integrity signals assigned in bus interface
   assign core_trans.integrity = 1'b0;                        // PMA integrity attribute is assigned in the MPU
 
-  cv32e41s_mpu
+  cv32e41s_mpu_test
   #(
     .IF_STAGE             ( 1                       ),
     .CORE_REQ_TYPE        ( obi_inst_req_t          ),
@@ -289,7 +308,12 @@ module cv32e41s_if_stage import cv32e41s_pkg::*;
     .PMP_NUM_REGIONS      ( PMP_NUM_REGIONS         ),
     .DEBUG                ( DEBUG                   ),
     .DM_REGION_START      ( DM_REGION_START         ),
-    .DM_REGION_END        ( DM_REGION_END           )
+    .DM_REGION_END        ( DM_REGION_END           ),
+
+    .XPMP_PMR_ENABLE      ( XPMP_PMR_ENABLE         ),              
+    .XPMP_PMR_ENCODING    ( XPMP_PMR_ENCODING       ),   
+    .XPMP_TRIE            ( XPMP_TRIE               ),   
+    .XPMP_TRIE_CMP        ( XPMP_TRIE_CMP           )       
   )
   mpu_i
   (
@@ -303,13 +327,19 @@ module cv32e41s_if_stage import cv32e41s_pkg::*;
 
     .core_one_txn_pend_n  ( prefetch_one_txn_pend_n     ),
     .core_mpu_err_wait_i  ( 1'b1                        ),
-    .core_mpu_err_o       (                             ), // Unconnected on purpose
+    .core_mpu_err_o       ( mpu_if_trie_fault              ), // Unconnected on purpose
     .core_trans_valid_i   ( prefetch_trans_valid        ),
     .core_trans_pushpop_i ( 1'b0                        ), // Prefetches are never part of a PUSH/POP sequence
     .core_trans_ready_o   ( prefetch_trans_ready        ),
     .core_trans_i         ( core_trans                  ),
     .core_resp_valid_o    ( prefetch_resp_valid         ),
     .core_resp_o          ( prefetch_inst_resp          ),
+    
+    .pmp_imp_req_o        ( pmp_if_req_o                       ), 
+    .pmp_imp_addr_o       ( pmp_if_addr_o                      ),
+    .pmp_imp_rvalid_i     ( pmp_if_rvalid_i                    ),
+    .pmp_imp_rdata_b0_i   ( pmp_if_rdata_b0_i                    ),
+    .pmp_imp_rdata_b1_i   ( pmp_if_rdata_b1_i                    ),
 
     .bus_trans_valid_o    ( bus_trans_valid             ),
     .bus_trans_ready_i    ( bus_trans_ready             ),
@@ -392,6 +422,8 @@ module cv32e41s_if_stage import cv32e41s_pkg::*;
 
   // Local instr_valid when we have valid output from prefetcher or we are inserting a dummy instruction
   // and IF is not halted or killed
+  logic test1 = !ctrl_fsm_i.kill_if;
+  logic test2 = !ctrl_fsm_i.halt_if;
   assign instr_valid = (prefetch_valid || dummy_insert) && !ctrl_fsm_i.kill_if && !ctrl_fsm_i.halt_if;
 
   // if_stage ready when killed, otherwise when not halted or if a dummy instruction is inserted.

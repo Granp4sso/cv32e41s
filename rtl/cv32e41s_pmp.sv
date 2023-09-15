@@ -23,7 +23,14 @@
 //                                                                            //
 // Authors:        Oivind Ekelund - oivind.ekelund@silabs.com                 //
 //                                                                            //
-// Description:    PMP (Physical Memory Protection)                           //
+// Additional contributions by:                                               //
+//                 Stefano Mercogliano - stefano.mercogliano@unina.it         //
+//                 Giovanni Celentano  - gio.celentano@hotmail.it             //
+//                 Maurizio Gaudino    - gaudinomaurizio4@gmail.com           //
+//                                                                            //
+//                                                                            //
+// Description:    PMP (Physical Memory Protection).                          //
+//                 PMR custom extension support.                              //
 //                                                                            //
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -32,9 +39,12 @@ module cv32e41s_pmp import cv32e41s_pkg::*;
   #(
     // Granularity of NAPOT access,
     // 0 = No restriction, 1 = 8 byte, 2 = 16 byte, 3 = 32 byte, etc.
-    parameter int unsigned PMP_GRANULARITY = 0,
+    parameter int unsigned  PMP_GRANULARITY   = 0,
     // Number of implemented regions
-    parameter int PMP_NUM_REGIONS = 0
+    parameter int           PMP_NUM_REGIONS   = 1,
+    // Custom XPMP extension
+    parameter xpmp_pmr_e      XPMP_PMR_ENABLE   = PMR_NONE,
+    parameter xpmp_pmr_enc_e  XPMP_PMR_ENCODING = PMR_ENC_LIN
     )
   (
    // Clock and Reset
@@ -42,14 +52,15 @@ module cv32e41s_pmp import cv32e41s_pkg::*;
    input logic        rst_n,
 
    // Interface to CSRs
-   input pmp_csr_t    csr_pmp_i,
+   input pmp_csr_t    csr_pmp_i, 
 
    // Privilege mode
    input              privlvl_t priv_lvl_i,
    // Access checking
    input logic [33:0] pmp_req_addr_i,
    input logic        pmp_req_debug_region_i,
-   input              pmp_req_e pmp_req_type_i,
+   input pmp_req_e    pmp_req_type_i,
+   output logic[33:0] pmr_reloc_addr_o,           
    output logic       pmp_req_err_o
    );
 
@@ -64,6 +75,8 @@ module cv32e41s_pmp import cv32e41s_pkg::*;
   logic [PMP_NUM_REGIONS-1:0]                       region_mml_perm_check;
   logic [PMP_NUM_REGIONS-1:0]                       access_fault_all;
   logic                                             access_fault;
+  logic [33:0]                                      reloc_address;
+  
 
   generate
     for (genvar r_a = 0; r_a < PMP_NUM_REGIONS; r_a++) begin : addr_match
@@ -204,19 +217,96 @@ module cv32e41s_pmp import cv32e41s_pkg::*;
                    csr_pmp_i.mseccfg.mml      ? (pmp_req_type_i == PMP_ACC_EXEC) :  // Machine mode execution access without matching region fails when mml=1
                    1'b0;                                                            // Machine mode access without matching region is granted when mmwp=0 and mml=0
 
-    // PMP entries are statically prioritized, from 0 to N-1
-    // The lowest-numbered PMP entry which matches an address determines accessability
     for (int i_r = PMP_NUM_REGIONS-1; i_r >= 0; i_r--) begin
-      if (region_match_all[i_r]) begin
+      if (region_match_all[i_r]) begin 
         access_fault = access_fault_all[i_r];
+        end
+        end
+  end
+
+  ////////////////////////////////////////////////////////////////////////////////////////////////
+  //                                              __      _                 _   _               //
+  //    /\/\   ___ _ __ ___   ___  _ __ _   _    /__\ ___| | ___   ___ __ _| |_(_) ___  _ __    //
+  //   /    \ / _ \ '_ ` _ \ / _ \| '__| | | |  / \/// _ \ |/ _ \ / __/ _` | __| |/ _ \| '_ \   //
+  //  / /\/\ \  __/ | | | | | (_) | |  | |_| | / _  \  __/ | (_) | (_| (_| | |_| | (_) | | | |  //
+  //  \/    \/\___|_| |_| |_|\___/|_|   \__, | \/ \_/\___|_|\___/ \___\__,_|\__|_|\___/|_| |_|  //
+  //                                    |___/                                                   //
+  //                                                                                            //
+  ////////////////////////////////////////////////////////////////////////////////////////////////
+
+  logic [30:0] reloc_offset_lin;
+  logic [4:0]  reloc_offset_pot;
+  logic [2:0]  reloc_offset_sub;
+
+  if(XPMP_PMR_ENABLE != PMR_NONE)begin
+
+    // Offset Linear Encoding
+    if(XPMP_PMR_ENCODING == PMR_ENC_LIN)begin
+     always_comb begin
+      for (int i_r = PMP_NUM_REGIONS-1; i_r >= 0; i_r--) begin
+        if (region_match_all[i_r]) begin 
+          reloc_offset_lin = csr_pmp_i.pmraddroff[i_r][30:0];
+          if(csr_pmp_i.pmraddroff[i_r][31] == 0)begin
+            reloc_address = pmp_req_addr_i + reloc_offset_lin;
+          end
+          else begin
+            reloc_address = pmp_req_addr_i - reloc_offset_lin[30:0];
+          end
+        end 
+        end
       end
     end
+
+    // Offset Power of Two Encoding
+    else if(XPMP_PMR_ENCODING == PMR_ENC_POT)begin
+      always_comb begin
+        for (int i_r = PMP_NUM_REGIONS-1; i_r >= 0; i_r--) begin
+          if (region_match_all[i_r]) begin 
+            reloc_offset_pot = csr_pmp_i.pmraddroff[i_r][4:0];
+            if(csr_pmp_i.pmraddroff[i_r][5] == 0)begin
+              reloc_address = pmp_req_addr_i + (1 << reloc_offset_pot);
+            end
+            else begin
+              reloc_address = pmp_req_addr_i - (1 << reloc_offset_pot); 
+            end
+          end
+        end
+      end
+    end
+    
+    // Hybrid Encoding
+    else if (XPMP_PMR_ENCODING == PMR_ENC_MIX)begin
+      always_comb begin
+        for (int i_r = PMP_NUM_REGIONS-1; i_r >= 0; i_r--) begin
+          if (region_match_all[i_r]) begin 
+            reloc_offset_pot = csr_pmp_i.pmraddroff[i_r][4:0];
+            reloc_offset_sub = csr_pmp_i.pmraddroff[i_r][7:5];
+            if(csr_pmp_i.pmraddroff[i_r][8] == 0)begin
+              reloc_address = pmp_req_addr_i + (1 << reloc_offset_pot)+(4'b0100 << reloc_offset_sub);
+            end
+            else begin
+              reloc_address = pmp_req_addr_i - ((1 << reloc_offset_pot)+(4'b0100 << reloc_offset_sub));
+            end
+            end
+          end
+        end
+    end
+
+  end else begin
+    // Default assignment for reloc address is the req address
+    assign reloc_address = pmp_req_addr_i;
+    assign reloc_offset_lin = '0;
+    assign reloc_offset_pot = '0;
+    assign reloc_offset_sub = '0;
   end
+
+  // Assign relocated address (if any) (M-mode cannot be relocated, only less privileged modes can)
+  assign pmr_reloc_addr_o = (priv_lvl_i == PRIV_LVL_M) ? pmp_req_addr_i : reloc_address ; 
 
   // PMP is always present (even if PMP_NUM_REGIONS == 0)
   // Do not block access if it is accessing the Debug Module region in debug mode
   assign pmp_req_err_o = pmp_req_debug_region_i ? 1'b0 : access_fault;
-
+  
   // RLB, rule locking bypass, is only relevant to cv32e41s_cs_registers which controls writes to the
   // PMP CSRs. Tie to unused signal here to prevent lint warnings.
   logic unused_csr_pmp_mseccfg_rlb;

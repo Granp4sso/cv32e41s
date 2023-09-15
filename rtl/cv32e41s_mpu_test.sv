@@ -28,7 +28,7 @@
 //                                                                            //
 ////////////////////////////////////////////////////////////////////////////////
 
-module cv32e41s_mpu import cv32e41s_pkg::*;
+module cv32e41s_mpu_test import cv32e41s_pkg::*;
   #(  parameter bit          IF_STAGE                     = 1,
       parameter type         CORE_REQ_TYPE                = obi_inst_req_t,
       parameter type         CORE_RESP_TYPE               = inst_resp_t,
@@ -40,11 +40,11 @@ module cv32e41s_mpu import cv32e41s_pkg::*;
       parameter bit          DEBUG                        = 1,
       parameter logic [31:0] DM_REGION_START              = 32'hF0000000,
       parameter logic [31:0] DM_REGION_END                = 32'hF0003FFF,
-      // Custom PMP trie extension
-      parameter int           PMP_TRIE                    = 0,
-      // Custom PMR extension
-      parameter pmr_en_e      PMR_ENABLE                  = PMR_EN_NONE,
-      parameter pmr_enc_e     PMR_ENCODING                = PMR_ENC_LIN
+      // Custom XPMP extension
+      parameter xpmp_pmr_e        XPMP_PMR_ENABLE   = PMR_NONE,
+      parameter xpmp_pmr_enc_e    XPMP_PMR_ENCODING = PMR_ENC_LIN,
+      parameter xpmp_trie_e       XPMP_TRIE         = PMP_TRIE_NONE,
+      parameter xpmp_trie_cmp_e   XPMP_TRIE_CMP     = PMP_TRIE_NOTCPM
   )
   (
    input logic  clk,
@@ -94,6 +94,7 @@ module cv32e41s_mpu import cv32e41s_pkg::*;
 
   logic        pma_err;
   logic        pmp_err;
+  logic        pmp_busy;
   logic        mpu_err;
   logic        mpu_block_core;
   logic        mpu_block_bus;
@@ -115,8 +116,26 @@ module cv32e41s_mpu import cv32e41s_pkg::*;
   logic [31:0] pmr_reloc_address;
   logic [31:0] checked_address;
 
+  // PMP trie signals
+  logic         pmp_bus_req;
+  CORE_REQ_TYPE pmp_trans;
+  logic         mpu_pmp_block;
+  logic         mpu_fault_flag;
+  logic         pmp_trie_en;
+
   // Detect a debug mode transaction to the Debug Module region
-  assign core_trans_debug_region = (core_trans_i.addr >= DM_REGION_START) && (core_trans_i.addr <= DM_REGION_END) && core_trans_i.dbg;
+  assign core_trans_debug_region = (pmp_trans.addr >= DM_REGION_START) && (pmp_trans.addr <= DM_REGION_END) && pmp_trans.dbg;
+
+  // PMP-trie depending conditions
+  // If the PMP trie is active and we are not running in M-mode, the request signal
+  // will be high only if no exception occurs, therefore the mpu_err alone is enough.
+  // Otherwise we need also the pmp request, which in this case would be exactly the core request
+  assign pmp_trie_en = csr_pmp_i.xpmpcfg.trie_support && csr_pmp_i.xpmpcfg.trie_en && pmp_priv_lvl != PRIV_LVL_M;
+  assign mpu_fault_flag = ( pmp_trie_en ) ? mpu_err : mpu_err && pmp_bus_req;
+
+  // If the PMP is busy, stall the core. This happens only if the PMP trie is supported,
+  // otherwise pmp_busy will always be 0.
+  assign mpu_pmp_block = ~mpu_err && pmp_busy;
 
   // FSM that will "consume" transfers failing PMA or PMP checks.
   // Upon failing checks, this FSM will prevent the transfer from going out on the bus
@@ -138,8 +157,12 @@ module cv32e41s_mpu import cv32e41s_pkg::*;
     case(state_q)
       MPU_IDLE: begin
 
-        if (mpu_err && core_trans_valid_i) begin
+        if(mpu_pmp_block) begin
 
+          mpu_block_core      = 1'b1;
+          mpu_block_bus       = 1'b1;
+
+        end else if (mpu_fault_flag) begin
           // Block transfer from going out on the bus.
           mpu_block_bus  = 1'b1;
 
@@ -149,11 +172,11 @@ module cv32e41s_mpu import cv32e41s_pkg::*;
           if (core_mpu_err_wait_i) begin
             if(core_trans_we) begin
               // MPU error on write
-              state_n = core_one_txn_pend_n ? MPU_WR_ERR_RESP : MPU_WR_ERR_WAIT;
+              state_n = (core_one_txn_pend_n | pmp_trie_en) ? MPU_WR_ERR_RESP : MPU_WR_ERR_WAIT;
             end
             else begin
               // MPU error on read
-              state_n = core_one_txn_pend_n ? MPU_RE_ERR_RESP : MPU_RE_ERR_WAIT;
+              state_n = (core_one_txn_pend_n | pmp_trie_en) ? MPU_RE_ERR_RESP : MPU_RE_ERR_WAIT;
             end
           end
 
@@ -198,10 +221,10 @@ module cv32e41s_mpu import cv32e41s_pkg::*;
   end
 
   // Forward transaction request towards bus interface
-  assign bus_trans_valid_o = core_trans_valid_i && !mpu_block_bus;
+  assign bus_trans_valid_o = pmp_bus_req && !mpu_block_bus; //core_trans_valid_i && !mpu_block_bus;
 
   always_comb begin
-    bus_trans_o             = core_trans_i;
+    bus_trans_o             = pmp_trans;
     bus_trans_o.addr        = checked_address;
     bus_trans_o.memtype[0]  = bus_trans_bufferable;
     bus_trans_o.memtype[1]  = bus_trans_cacheable;
@@ -214,7 +237,7 @@ module cv32e41s_mpu import cv32e41s_pkg::*;
 
 
   // Report MPU errors to the core immediately
-  assign core_mpu_err_o = mpu_err;
+  assign core_mpu_err_o = mpu_err & pmp_trie_en;
 
   // Signal ready towards core
   assign core_trans_ready_o = (bus_trans_ready_i && !mpu_block_core) || mpu_err_trans_ready;
@@ -226,7 +249,7 @@ module cv32e41s_mpu import cv32e41s_pkg::*;
   )
   pma_i
     (
-    .trans_addr_i               ( core_trans_i.addr       ),
+    .trans_addr_i               ( pmp_trans.addr       ),
     .trans_debug_region_i       ( core_trans_debug_region ),
     .trans_pushpop_i            ( core_trans_pushpop_i    ),
     .instr_fetch_access_i       ( instr_fetch_access      ),
@@ -245,34 +268,38 @@ module cv32e41s_mpu import cv32e41s_pkg::*;
     if (PMP) begin: xpmp
       cv32e41s_xpmp #(
         // Parameters
-        .PMP_GRANULARITY                  (PMP_GRANULARITY        ),
-        .PMP_NUM_REGIONS                  (PMP_NUM_REGIONS        ),
-        .PMP_TRIE                         (0              ),
-        .PMR_ENABLE                       (0             ),              
-        .PMR_ENCODING                     (PMR_ENCODING           )   
+        .PMP_GRANULARITY                    ( PMP_GRANULARITY         ),
+        .PMP_NUM_REGIONS                    ( PMP_NUM_REGIONS         ),
+        .XPMP_PMR_ENABLE                    ( XPMP_PMR_ENABLE         ),              
+        .XPMP_PMR_ENCODING                  ( XPMP_PMR_ENCODING       ),   
+        .XPMP_TRIE                          ( XPMP_TRIE               ),   
+        .XPMP_TRIE_CMP                      ( XPMP_TRIE_CMP           ),  
+        .CORE_REQ_TYPE                      ( CORE_REQ_TYPE           )   
       ) xpmp_i (
 
-        .pmp_req_err_o                     (pmp_err                ),
-        .clk                               (clk                    ),
-        .rst_n                             (rst_n                  ),
-        .pmp_req_type_i                    (pmp_req_type           ),
-        .csr_pmp_i                         (csr_pmp_i              ),
-        .priv_lvl_i                        (pmp_priv_lvl           ),
-        .pmp_req_addr_i                    (pmp_req_addr           ),
-        .pmr_reloc_addr_o                  (pmr_reloc_address       ),   
-        .pmp_req_debug_region_i            (core_trans_debug_region),
+        .pmp_req_err_o                      ( pmp_err                 ),
+        .clk                                ( clk                     ),
+        .rst_n                              ( rst_n                   ),
+        .pmp_req_type_i                     ( pmp_req_type            ),
+        .csr_pmp_i                          ( csr_pmp_i               ),
+        .priv_lvl_i                         ( pmp_priv_lvl            ),
+        .pmp_req_addr_i                     ( pmp_req_addr            ),
+        .pmr_reloc_addr_o                   ( pmr_reloc_address       ),   
+        .pmp_req_debug_region_i             ( core_trans_debug_region ),
 
         // pmp-trie signals
-        .pmp_busy_o                         (),
-        .pmp_imp_req_o                      ( pmp_imp_req_o                       ), 
-        .pmp_imp_addr_o                     ( pmp_imp_addr_o                      ),
-        .pmp_imp_rvalid_i                   ( pmp_imp_rvalid_i                    ),
-        .pmp_imp_rdata_b0_i                 ( pmp_imp_rdata_b0_i                    ),
-        .pmp_imp_rdata_b1_i                 ( pmp_imp_rdata_b1_i                    ),
-        .core_trans_i                     ( '0          ),
-        .core_req_i                       ( core_trans_valid_i              ),
-        .pmp_trans_o                      (              ),
-        .pmp_req_o                        (            )
+        .pmp_busy_o                         ( pmp_busy                ),
+        .pmp_imp_req_o                      ( pmp_imp_req_o           ), 
+        .pmp_imp_addr_o                     ( pmp_imp_addr_o          ),
+        .pmp_imp_rvalid_i                   ( pmp_imp_rvalid_i        ),
+        .pmp_imp_rdata_b0_i                 ( pmp_imp_rdata_b0_i      ),
+        .pmp_imp_rdata_b1_i                 ( pmp_imp_rdata_b1_i      ),
+
+        // pmp-trie transaction signals
+        .core_trans_i                       ( core_trans_i            ),
+        .core_req_i                         ( core_trans_valid_i      ),
+        .pmp_trans_o                        ( pmp_trans               ),
+        .pmp_req_o                          ( pmp_bus_req             )
          
          );
 
@@ -280,7 +307,7 @@ module cv32e41s_mpu import cv32e41s_pkg::*;
     end
     else begin: no_pmp
       assign pmp_err = 1'b0;
-      assign pmr_reloc_address = 32'b0; //Test
+      assign pmr_reloc_address = 32'b0; 
     end
   endgenerate
 
@@ -299,8 +326,8 @@ module cv32e41s_mpu import cv32e41s_pkg::*;
     end
     else begin: mpu_lsu
       assign instr_fetch_access       = 1'b0;
-      assign load_access              = !core_trans_i.we;
-      assign core_trans_we            = core_trans_i.we;
+      assign load_access              = !pmp_trans.we;
+      assign core_trans_we            = pmp_trans.we;
       assign core_resp_o.wpt_match    = '0; // Will be set by upstream wpt-module within load_store_unit
       assign core_resp_o.bus_resp     = bus_resp_i;
       assign pmp_req_type             = core_trans_we ? PMP_ACC_WRITE : PMP_ACC_READ;

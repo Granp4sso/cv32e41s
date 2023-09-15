@@ -12,6 +12,7 @@
 // Engineer:       Davide Schiavone - pschiavo@iis.ee.ethz.ch                 //
 //                                                                            //
 // Additional contributions by:                                               //
+//                Stefano Mercogliano - stefano.mercogliano@unina.it          //
 //                                                                            //
 // Design Name:    Interrupt Controller                                       //
 // Project Name:   RI5CY                                                      //
@@ -38,6 +39,7 @@ module cv32e41s_int_controller import cv32e41s_pkg::*;
   input  logic [31:0] mie_i,                    // MIE CSR
   input  mstatus_t    mstatus_i,                // MSTATUS CSR
   input  privlvl_t    priv_lvl_i,               // Current privilege level of core
+  input  logic [31:0] mideleg_i,                // MIDELEG CSR 
 
   // To cs_registers
   output logic [31:0] mip_o                     // MIP CSR
@@ -64,13 +66,14 @@ module cv32e41s_int_controller import cv32e41s_pkg::*;
   assign mip_o = irq_q;
 
   // Qualify registered IRQ with MIE CSR to compute locally enabled IRQs
-  assign irq_local_qual = irq_q & mie_i;
+  // In Machine mode, delegated interrupts will be masked (i.e. no interrupts will be generated)
+  assign irq_local_qual = (priv_lvl_i == PRIV_LVL_M) ? irq_q & mie_i & ~mideleg_i : irq_q & mie_i;
 
   // Wake-up signal based on unregistered IRQ such that wake-up can be caused if no clock is present
-  assign irq_wu_ctrl_o = |(irq_i & mie_i);
+  assign irq_wu_ctrl_o = (priv_lvl_i == PRIV_LVL_M) ? |(irq_i & mie_i & ~mideleg_i) : |(irq_i & mie_i);
 
   // Global interrupt enable
-  assign global_irq_enable = mstatus_i.mie || (priv_lvl_i < PRIV_LVL_M);
+  assign global_irq_enable = (mstatus_i.mie || (priv_lvl_i < PRIV_LVL_M)) || (mstatus_i.mie || mstatus_i.sie || (priv_lvl_i < PRIV_LVL_S));
 
   // Request to take interrupt if there is a locally enabled interrupt while interrupts are also enabled globally
   assign irq_req_ctrl_o = (|irq_local_qual) && global_irq_enable;
@@ -106,15 +109,15 @@ module cv32e41s_int_controller import cv32e41s_pkg::*;
 
     else if (irq_local_qual[CSR_MEIX_BIT]) irq_id_ctrl_o = CSR_MEIX_BIT;        // MEI, irq_i[11]
     else if (irq_local_qual[CSR_MSIX_BIT]) irq_id_ctrl_o = CSR_MSIX_BIT;        // MSI, irq_i[3]
-    else                                   irq_id_ctrl_o = CSR_MTIX_BIT;        // MTI, irq_i[7]
+    else if (irq_local_qual[CSR_MTIX_BIT]) irq_id_ctrl_o = CSR_MTIX_BIT;        // MTI, irq_i[7]
 
     // Reserved: irq_local_qual[10], irq_id_ctrl_o = 5'd10
     // Reserved: irq_local_qual[ 2], irq_id_ctrl_o = 5'd2
     // Reserved: irq_local_qual[ 6], irq_id_ctrl_o = 5'd6
 
-    // Reserved: irq_local_qual[ 9], irq_id_ctrl_o = 5'd9, SEI
-    // Reserved: irq_local_qual[ 1], irq_id_ctrl_o = 5'd1, SSI
-    // Reserved: irq_local_qual[ 5], irq_id_ctrl_o = 5'd5, STI
+    else if (irq_local_qual[CSR_SEIX_BIT]) irq_id_ctrl_o = CSR_SEIX_BIT;        // SEI, irq_i[9]
+    else if (irq_local_qual[CSR_SSIX_BIT]) irq_id_ctrl_o = CSR_SSIX_BIT;        // SSI, irq_i[1]
+    else                                   irq_id_ctrl_o = CSR_STIX_BIT;        // STI, irq_i[5]
 
     // Reserved: irq_local_qual[ 8], irq_id_ctrl_o = 5'd8, UEI
     // Reserved: irq_local_qual[ 0], irq_id_ctrl_o = 5'd0, USI
