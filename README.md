@@ -17,6 +17,7 @@ at security applications and offers both Machine mode and User mode, an enhanced
 various anti-tampering features.
 
 It started its life as a fork of the OpenHW CV32E40S core that in its turn was based on the CV32E40P core.
+It supports the custom XPMP extension. Documentation TODO.
 
 ## Documentation
 
