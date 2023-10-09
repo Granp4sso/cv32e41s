@@ -475,9 +475,32 @@ module cv32e41s_core import cv32e41s_pkg::*;
   //////////////////////////////////////////////////////////////////////////////
   
   // instantiating the Instr TCM
-  cv32e41s_tcm #(
+  /*cv32e41s_tcm #(
     .A_WID(32),
     .D_WID(32)
+  )inst_tcm(
+    .clk_i(clk_i),
+    .rst_ni(rst_ni),
+    // Data port
+    .a_req_i(data_mem_req[TcmInst]), 
+    .a_we_i(data_mem_we[TcmInst]),
+    .a_be_i(data_mem_be[TcmInst]),
+    .a_addr_i(i_tcm_a_addr),
+    .a_wdata_i(data_mem_wdata[TcmInst]),
+    .a_rvalid_o(data_mem_rvalid[TcmInst]),
+    .a_rdata_o(data_mem_rdata[TcmInst]),
+    //IF port
+    .b_req_i(if_mem_instr_req[TcmInst]),
+    .b_we_i(1'b0), // not writing
+    .b_be_i(4'b0), // 0 mask, because we're not writing
+    .b_addr_i(i_tcm_b_addr),
+    .b_wdata_i(32'b0), // not writing in the if port 
+    .b_rvalid_o(if_mem_instr_rvalid[TcmInst]),
+    .b_rdata_o(if_mem_instr_rdata[TcmInst])
+  );*/
+
+  cv32e41s_tcm #(
+    .Depth(TCM_INST_SIZE / 4)
   )inst_tcm(
     .clk_i(clk_i),
     .rst_ni(rst_ni),
@@ -501,8 +524,7 @@ module cv32e41s_core import cv32e41s_pkg::*;
 
   // instantiating the Data TCM
   cv32e41s_tcm #(
-    .A_WID(32),
-    .D_WID(32)
+    .Depth(TCM_DATA_SIZE / 4)
   )data_tcm(
     .clk_i(clk_i),
     .rst_ni(rst_ni),

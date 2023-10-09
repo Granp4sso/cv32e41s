@@ -83,9 +83,7 @@ module cv32e41s_rpm
 
   // Implementation is carried out by hosting two small TCMs
 	cv32e41s_tcm #(
-    .A_WID		(AddressWidth-1	),
-		.MEM_SIZE	(MemSize/2		  ),
-    .D_WID		(DataWidth		  )
+    .Depth        (MemSize / (4*2))
   )rpm_bank_zero(
     .clk_i				(clk_i),
     .rst_ni				(rst_ni),
@@ -110,9 +108,7 @@ module cv32e41s_rpm
   );
 
   cv32e41s_tcm #(
-    .A_WID		(AddressWidth-1	),
-		.MEM_SIZE	(MemSize/2		  ),
-    .D_WID		(DataWidth		  )
+    .Depth        (MemSize / (4*2))
   )rpm_bank_one(
     .clk_i				(clk_i),
     .rst_ni				(rst_ni),

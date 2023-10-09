@@ -23,41 +23,75 @@
 typedef logic [31:0] memPkt;
 
 module cv32e41s_ram_struct #(
-    parameter A_WID     = 32,
-    parameter MEM_SIZE  = 4096,
-    parameter D_WID     = 32
-)
-(
-    input clka_i,                   // Clock for port A
-    input clkb_i,                   // Clock for port B 
-    input wea_i,                    // Write enable for port A
-    input web_i,                    // Write enable for port B 
-    input ena_i,                    // Enable port A
-    input enb_i,                    // Enable Port B 
-    input [A_WID-1:0] addra_i,      // Write/Read Address on port A 
-    input [A_WID-1:0] addrb_i,      // Write/Read Address on port B 
-    input memPkt da_i,db_i,         // Data Inputs on ports a and b
-    output memPkt douta_o, doutb_o  // Data outputs on port a and b
+  parameter  int Width           = 32,              // bit
+  parameter  int Depth           = 128,
+  parameter  int DataBitsPerMask = 1,                // Number of data bits per bit of write mask
+
+  localparam int Aw              = $clog2(Depth)    // derived parameter
+) (
+  input clk_a_i,
+  input clk_b_i,
+
+  input                    a_req_i,
+  input                    a_write_i,
+  input        [Aw-1:0]    a_addr_i,
+  input        [Width-1:0] a_wdata_i,
+  input  logic [Width-1:0] a_wmask_i,
+  output logic [Width-1:0] a_rdata_o,
+
+
+  input                    b_req_i,
+  input                    b_write_i,
+  input        [Aw-1:0]    b_addr_i,
+  input        [Width-1:0] b_wdata_i,
+  input  logic [Width-1:0] b_wmask_i,
+  output logic [Width-1:0] b_rdata_o
 );
 
-memPkt mem [MEM_SIZE-1:0];
+  // Width of internal write mask. Note *_wmask_i input into the module is always assumed
+  // to be the full bit mask.
+  localparam int MaskWidth = Width / DataBitsPerMask;
 
-always @ (posedge clka_i) begin
-    if (ena_i) begin
-        douta_o <= mem[addra_i];
-        if(wea_i) begin 
-            mem[addra_i] <= da_i;
-        end
-    end
-end
+  logic [Width-1:0]     mem [Depth];
+  logic [MaskWidth-1:0] a_wmask;
+  logic [MaskWidth-1:0] b_wmask;
 
-always @ (posedge clkb_i) begin
-    if (enb_i) begin
-        doutb_o <= mem[addrb_i]; 
-        if(web_i) begin
-            mem[addrb_i] <= db_i;
+  for (genvar k = 0; k < MaskWidth; k++) begin : gen_wmask
+    assign a_wmask[k] = &a_wmask_i[k*DataBitsPerMask +: DataBitsPerMask];
+    assign b_wmask[k] = &b_wmask_i[k*DataBitsPerMask +: DataBitsPerMask];
+  end
+
+  // Xilinx FPGA specific Dual-port RAM coding style
+  // using always instead of always_ff to avoid 'ICPD  - illegal combination of drivers' error
+  // thrown due to 'mem' being driven by two always processes below
+  always @(posedge clk_a_i) begin
+    if (a_req_i) begin
+      if (a_write_i) begin
+        for (int i=0; i < MaskWidth; i = i + 1) begin
+          if (a_wmask[i]) begin
+            mem[a_addr_i][i*DataBitsPerMask +: DataBitsPerMask] <=
+              a_wdata_i[i*DataBitsPerMask +: DataBitsPerMask];
+          end
         end
+      end else begin
+        a_rdata_o <= mem[a_addr_i];
+      end
     end
-end
+  end
+
+  always @(posedge clk_b_i) begin
+    if (b_req_i) begin
+      if (b_write_i) begin
+        for (int i=0; i < MaskWidth; i = i + 1) begin
+          if (b_wmask[i]) begin
+            mem[b_addr_i][i*DataBitsPerMask +: DataBitsPerMask] <=
+              b_wdata_i[i*DataBitsPerMask +: DataBitsPerMask];
+          end
+        end
+      end else begin
+        b_rdata_o <= mem[b_addr_i];
+      end
+    end
+  end
 
 endmodule

@@ -16,17 +16,12 @@
 
 module cv32e41s_tcm 
 #(
-  parameter A_WID     = 32,
-  parameter MEM_SIZE  = 4096,
-  parameter D_WID     = 32
-
+    parameter int Depth       = 128
 ) (
     input               clk_i,
     input               rst_ni,
-    // TCM is basically a dual port memory, the first post can be a data port used 
-    // to access data ( and to write instructions ) and the second an instruction port
-    // or maybe both.
-    input               a_req_i, 
+
+    input               a_req_i,
     input               a_we_i,
     input        [ 3:0] a_be_i,
     input        [31:0] a_addr_i,
@@ -43,9 +38,19 @@ module cv32e41s_tcm
     output logic [31:0] b_rdata_o
 );
 
+  localparam int Aw = $clog2(Depth);
+
+  logic [Aw-1:0] a_addr_idx;
+  assign a_addr_idx = a_addr_i[Aw-1+2:2];
+  logic [31-Aw:0] unused_a_addr_parts;
+  assign unused_a_addr_parts = {a_addr_i[31:Aw+2], a_addr_i[1:0]};
+
+  logic [Aw-1:0] b_addr_idx;
+  assign b_addr_idx = b_addr_i[Aw-1+2:2];
+  logic [31-Aw:0] unused_b_addr_parts;
+  assign unused_b_addr_parts = {b_addr_i[31:Aw+2], b_addr_i[1:0]};
+
   // Convert byte mask to SRAM bit mask.
-  // be is the mask of bytes to write,the for loop converts it into a 
-  // mask of bits.
   logic [31:0] a_wmask;
   logic [31:0] b_wmask;
   always_comb begin
@@ -55,8 +60,7 @@ module cv32e41s_tcm
       b_wmask[8*i+:8] = {8{b_be_i[i]}};
     end
   end
-  // Manages the handshake, one clock cycle after the valid signal becomes high 
-  // it is basically in this implementation a delayed version of the request 
+
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (!rst_ni) begin
       a_rvalid_o <= '0;
@@ -66,29 +70,26 @@ module cv32e41s_tcm
       b_rvalid_o <= b_req_i;
     end
   end
-  typedef logic [31:0] memPkt;
+
   cv32e41s_ram_struct #(
-    .A_WID(A_WID),
-    .MEM_SIZE(MEM_SIZE),
-    .D_WID(D_WID)
-  ) ram
-  (
-    // common clocks
-    .clka_i(clk_i), 
-    .clkb_i(clk_i), 
-    // in the obi protocol if req==1 then we must read, if we==0, else if we==1  write
-    // Mapping this to internal mem means that the enable is the req and the 
-    // we is exactly the we .
-    .wea_i(a_we_i),  
-    .web_i(b_we_i), 
-    .ena_i(a_req_i), 
-    .enb_i(b_req_i),   
-    .addra_i(a_addr_i),    // Write/Read Address on port A 
-    .addrb_i(b_addr_i),    // Write/Read Address on port B 
-    .da_i(a_wdata_i),
-    .db_i(b_wdata_i),      // Data Inputs on ports a and b
-    .douta_o(a_rdata_o),
-    .doutb_o(b_rdata_o)    // Data outputs on port a and b
+    .Width(32),
+    .Depth(Depth),
+    .DataBitsPerMask(8)
+  ) u_ram (
+    .clk_a_i   (clk_i),
+    .clk_b_i   (clk_i),
+    .a_req_i   (a_req_i),
+    .a_write_i (a_we_i),
+    .a_addr_i  (a_addr_idx),
+    .a_wdata_i (a_wdata_i),
+    .a_wmask_i (a_wmask),
+    .a_rdata_o (a_rdata_o),
+    .b_req_i   (b_req_i),
+    .b_write_i (b_we_i),
+    .b_wmask_i (b_wmask),
+    .b_addr_i  (b_addr_idx),
+    .b_wdata_i (b_wdata_i),
+    .b_rdata_o (b_rdata_o)
   );
 
 endmodule
